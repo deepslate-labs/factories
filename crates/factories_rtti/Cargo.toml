@@ -1,0 +1,7 @@
+[package]
+name = "factories_rtti"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+factories_types_macro = { workspace = true }

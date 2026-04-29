@@ -1,0 +1,23 @@
+[workspace]
+members = ["crates/factories_actor","crates/factories_collect","crates/factories_rtti", "crates/factories_types_macro"]
+resolver = "3"
+
+[workspace.dependencies]
+# Async RT
+tokio = { version = "1.52.0", default-features = false }
+
+# Observability
+tracing = { version = "0.1.44", default-features = false }
+
+# Macro utilities
+paste = "1.0.15"
+proc-macro2 = "1.0.106"
+proc-macro-error = "1.0.4"
+quote = "1.0.45"
+syn = "2.0.117"
+
+seq-macro = "0.3.6"
+
+# Own crates
+factories_rtti = { path = "crates/factories_rtti" }
+factories_types_macro = { path = "crates/factories_types_macro" }

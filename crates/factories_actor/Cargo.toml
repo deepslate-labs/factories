@@ -1,0 +1,13 @@
+[package]
+name = "factories_actor"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+tokio = ["dep:tokio"]
+
+[dependencies]
+tokio = { workspace = true, features = ["sync"], default-features = false, optional = true }
+paste = { workspace = true }
+factories_rtti = { workspace = true }
+seq-macro = { workspace = true }
