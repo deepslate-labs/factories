@@ -1,10 +1,11 @@
 [workspace]
-members = ["crates/factories_actor","crates/factories_collect","crates/factories_rtti", "crates/factories_types_macro"]
+members = ["crates/factories_actor","crates/factories_collect", "crates/factories_rtti", "crates/factories_types_macro"]
 resolver = "3"
 
 [workspace.dependencies]
 # Async RT
 tokio = { version = "1.52.0", default-features = false }
+pin-project = "1.1.11"
 
 # Observability
 tracing = { version = "0.1.44", default-features = false }
@@ -18,6 +19,12 @@ syn = "2.0.117"
 
 seq-macro = "0.3.6"
 
+# Error handling
+thiserror = { version = "2.0.18", default-features = false }
+
 # Own crates
+factories_actor = { path = "crates/factories_actor" }
+factories_collect = { path = "crates/factories_collect" }
+factories_mem = { path = "crates/factories_mem" }
 factories_rtti = { path = "crates/factories_rtti" }
 factories_types_macro = { path = "crates/factories_types_macro" }

@@ -1,3 +1,5 @@
+use core::fmt::{Debug, Formatter};
+
 #[doc(hidden)]
 pub mod _imp {
     pub use factories_types_macro::match_specialize;
@@ -65,7 +67,7 @@ macro_rules! autoref_specialize {
     };
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct AutorefSpecialized<T> {
     resolve: fn() -> T,
 }
@@ -82,3 +84,19 @@ impl<T> AutorefSpecialized<T> {
     }
 }
 
+impl<T> Debug for AutorefSpecialized<T> where T: Debug {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AutorefSpecialized")
+            .field("resolver", &(self.resolve as *const ()))
+            .field("value", &self.resolve())
+            .finish()
+    }
+}
+
+impl<T> PartialEq for AutorefSpecialized<T> where T: PartialEq {
+    fn eq(&self, other: &Self) -> bool {
+        self.resolve() == other.resolve()
+    }
+}
+
+impl<T> Eq for AutorefSpecialized<T> where T: Eq {}

@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use core::any::TypeId;
+use crate::AutorefSpecialized;
 
 /// Basic type information required by some library functions.
 #[derive(Debug, Copy, Clone)]
@@ -177,3 +178,48 @@ impl CloneRtti {
         Box::into_raw(Box::new(src.clone())).cast()
     }
 }
+
+/// RTTI for thread safety.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct SendSyncRtti {
+    send: AutorefSpecialized<bool>,
+    sync: AutorefSpecialized<bool>
+}
+
+impl SendSyncRtti {
+    /// Create the sync/sync information.
+    pub const fn new(
+        send: AutorefSpecialized<bool>,
+        sync: AutorefSpecialized<bool>,
+    ) -> Self {
+        Self { send, sync }
+    }
+
+    /// Determine whether this RTTI is associated with a type that is `Send`.
+    pub fn is_send(&self) -> bool {
+        self.send.resolve()
+    }
+
+    /// Determine whether this RTTI is associated with a type that is `Sync`.
+    pub fn is_sync(&self) -> bool {
+        self.sync.resolve()
+    }
+}
+
+#[macro_export]
+macro_rules! create_send_sync_rtti {
+    ($type:ty) => {
+        const { $crate::rtti::SendSyncRtti::new(
+            $crate::autoref_specialize!($type -> bool {
+                ::core::marker::Send => true,
+                _ => false,
+            }),
+            $crate::autoref_specialize!($type -> bool {
+                ::core::marker::Sync => true,
+                _ => false,
+            }),
+        ) }
+    };
+}
+
+pub use create_send_sync_rtti;

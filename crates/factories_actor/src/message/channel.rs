@@ -1,5 +1,5 @@
-use core::fmt::Formatter;
 use crate::message::Message;
+use core::fmt::Formatter;
 
 /// The reply sender used to reply to messages.
 ///
@@ -13,13 +13,50 @@ pub enum AnswerSender<T: Message> {
     #[cfg(feature = "tokio")]
     Tokio(tokio::sync::oneshot::Sender<T::Answer>),
 
-    #[cfg(not(any(
-        feature = "tokio"
-    )))]
+    #[cfg(not(any(feature = "tokio")))]
     #[doc(hidden)]
-    Never(#[allow(private_interfaces)] Empty<T>)
+    Never(#[allow(private_interfaces)] Empty<T>),
 }
 
+/// The reply receiver used to receive replies.
+#[derive(Debug)]
+pub enum AnswerReceiver<T: Message> {
+    #[cfg(feature = "tokio")]
+    Tokio(tokio::sync::oneshot::Receiver<T::Answer>),
+
+    #[cfg(not(any(feature = "tokio")))]
+    #[doc(hidden)]
+    Never(#[allow(private_interfaces)] Empty<T>),
+}
+
+impl<T: Message> AnswerReceiver<T> {
+    /// Receive the answer.
+    pub async fn recv(self) -> Option<T::Answer> {
+        match self {
+            #[cfg(feature = "tokio")]
+            AnswerReceiver::Tokio(tokio) => tokio.await.ok(),
+            #[cfg(not(any(feature = "tokio")))]
+            AnswerReceiver::Never(_) => unreachable!(),
+        }
+    }
+
+    /// Receive the answer blocking.
+    pub fn blocking_recv(self) -> Option<T::Answer> {
+        match self {
+            #[cfg(feature = "tokio")]
+            AnswerReceiver::Tokio(tokio) => tokio.blocking_recv().ok(),
+            #[cfg(not(any(feature = "tokio")))]
+            AnswerReceiver::Never(_) => unreachable!(),
+        }
+    }
+}
+
+/// Create an answer channel.
+#[cfg(feature = "tokio")]
+pub fn answer_channel<T: Message>() -> (AnswerSender<T>, AnswerReceiver<T>) {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    (AnswerSender::Tokio(sender), AnswerReceiver::Tokio(receiver))
+}
 
 // This is here so that the compiler allows us to have a variant in the enum
 // when no other variant is available. This variant should always be Send,
@@ -31,8 +68,11 @@ pub enum AnswerSender<T: Message> {
 #[doc(hidden)]
 #[allow(dead_code)]
 union Empty<T: Message> {
-    uninhabited: (core::convert::Infallible, core::marker::PhantomData<T::Answer>),
-    unit: ()
+    uninhabited: (
+        core::convert::Infallible,
+        core::marker::PhantomData<T::Answer>,
+    ),
+    unit: (),
 }
 
 impl<T: Message> core::fmt::Debug for Empty<T> {
