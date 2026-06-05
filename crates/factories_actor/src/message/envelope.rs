@@ -1015,7 +1015,7 @@ mod test {
         assert_eq!(env.payload::<LargeMsg>().unwrap().data[127], 0xFF);
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "tokio-answer")]
     mod ask_tests {
         use super::*;
 
@@ -1306,7 +1306,7 @@ mod test {
         assert_eq!(env.payload::<SmallMsg>().unwrap().value, 7);
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "tokio-answer")]
     mod try_clone_ask_tests {
         use super::*;
 
@@ -1380,7 +1380,7 @@ mod test {
         }
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "tokio-answer")]
     mod sendable_ask_tests {
         use super::*;
 

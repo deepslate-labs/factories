@@ -4,16 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-tokio = ["dep:tokio"]
+full-runtime = ["kanal-runtime", "tokio-answer", "tokio-runtime"]
+
+# This is pretty lightweight, only pulls in tokio sync and not the runtime
+tokio-answer = ["dep:tokio", "tokio/sync"]
+kanal-runtime = ["dep:kanal", "kanal/async"]
+tokio-runtime = ["dep:tokio", "tokio/rt"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-tokio = { workspace = true, features = ["sync"], default-features = false, optional = true }
+kanal = { workspace = true, optional = true, default-features = false }
+tokio = { workspace = true, optional = true, default-features = false }
+futures = { workspace = true, features = ["alloc"] }
 tracing = { workspace = true, optional = true }
 pin-project = { workspace = true }
+once_cell = { workspace = true, features = ["critical-section"] }
 
 paste = { workspace = true }
 factories_rtti = { workspace = true }
 seq-macro = { workspace = true }
+typed-builder = { workspace = true }
 
 thiserror = { workspace = true }

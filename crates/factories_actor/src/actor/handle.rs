@@ -1,12 +1,13 @@
+use crate::actor::channel::{
+    ActorChannel, ActorChannelSendError, ActorChannelSendable, DynActorChannelSendable,
+};
 use crate::actor::dispatch::{
     ActorMessageDispatcher, DispatchedActorMessage, DispatchedActorMessageContext,
 };
 use crate::actor::identity::{ActorIdentity, AnyActorIdentity};
 use crate::actor::rtti::ActorRtti;
-use crate::actor::{
-    Actor, ActorChannel, ActorChannelSendError, ActorChannelSendable, DynActorChannelSendable,
-    MessageHandler,
-};
+use crate::actor::task::ActorTaskHandle;
+use crate::actor::{Actor, MessageHandler};
 use crate::message::Message;
 use crate::message::channel::{AnswerReceiver, AnswerSender};
 use crate::message::envelope::MessageEnvelope;
@@ -34,6 +35,7 @@ impl<A: Actor> TypedActorHandle<A> {
     where
         A: 'static,
         <A as Actor>::Channel: Send + Sync,
+        <A as Actor>::Error: Send + Sync,
     {
         let this = self.0 as Arc<dyn AnyActorIdentity + Send + Sync>;
         AnyActorHandle(this)
@@ -73,7 +75,7 @@ impl<A: Actor> TypedActorHandle<A> {
     }
 
     /// Send a message to the actor expecting a reply.
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "tokio-answer")]
     pub fn ask<M: Message>(&self, message: M) -> AskSendable<'_, M, impl ActorChannelSendable<'_>>
     where
         A: MessageHandler<M>,
@@ -99,13 +101,13 @@ pub struct AskSendable<'a, M: Message, S: ActorChannelSendable<'a>> {
 impl<'a, M: Message, S: ActorChannelSendable<'a>> AskSendable<'a, M, S> {
     /// Perform the message exchange asynchronously with the actor.
     pub async fn exchange(self) -> Result<M::Answer, AskError> {
-        self.sendable.send().await.map_err(|(err, _)| err)?;
+        self.sendable.send().await?;
         self.receive.recv().await.ok_or(AskError::NoReply)
     }
 
     /// Perform the message exchange synchronously with the actor.
     pub fn blocking_exchange(self) -> Result<M::Answer, AskError> {
-        self.sendable.blocking_send().map_err(|(err, _)| err)?;
+        self.sendable.blocking_send()?;
         self.receive.blocking_recv().ok_or(AskError::NoReply)
     }
 }
@@ -177,6 +179,7 @@ impl<A: Actor> From<TypedActorHandle<A>> for AnyActorHandle
 where
     A: 'static,
     A::Channel: Send + Sync,
+    A::Error: Send + Sync,
 {
     fn from(value: TypedActorHandle<A>) -> Self {
         value.erase_type()
@@ -268,6 +271,7 @@ pub trait ActorHandle: ActorHandleBase {
         self.identity().dyn_channel().prepare_send(message)
     }
 
+    /// Prepare sending a dynamic message to the actor,
     fn prepare_send_dynamic(
         &self,
         message: MessageEnvelope,
@@ -279,6 +283,11 @@ pub trait ActorHandle: ActorHandleBase {
 
         // SAFETY: We just bound the dispatcher, so the message can be dispatched.
         Some(unsafe { self.prepare_send_dynamic_dispatched(dispatched_message) })
+    }
+
+    /// Retrieve the task handle of the actor task.
+    fn task(&self) -> &ActorTaskHandle {
+        self.identity().task()
     }
 }
 

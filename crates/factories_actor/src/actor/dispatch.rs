@@ -90,11 +90,10 @@ impl ActorMessageDispatcher {
             };
 
             Box::pin(async move {
-                let guard =
-                    <<A as MessageHandler<M>>::AccessMode as AccessMode<A>>::acquire(
-                        dispatch_context.lock_strategy(),
-                    )
-                    .await;
+                let guard = <<A as MessageHandler<M>>::AccessMode as AccessMode<A>>::acquire(
+                    dispatch_context.lock_strategy(),
+                )
+                .await;
 
                 Box::pin(async move {
                     // SAFETY: The caller has guaranteed that `message_context.envelope`
@@ -186,6 +185,23 @@ impl DispatchedActorMessage {
     /// Decompose the message into its parts.
     pub fn into_parts(self) -> (ActorMessageDispatcher, DispatchedActorMessageContext) {
         (self.dispatcher, self.context)
+    }
+
+    /// Dispatch the message onto the actor loop.
+    ///
+    /// # Safety
+    /// The type A must be the target type to which the actor message was bound.
+    ///
+    /// In addition to that must this method be called in an appropriate dispatch context. For most
+    /// actors this means in the actor dispatch loop, unless pass through messaging is enabled
+    /// for the actor.
+    pub unsafe fn dispatch_onto_loop<A: Actor + ?Sized>(
+        self,
+        dispatch_context: &<A::RunLoop as ActorRunLoop<A>>::DispatchContext,
+    ) -> BoxedAcquireFuture<'_> {
+        let (dispatcher, message_context) = self.into_parts();
+
+        unsafe { dispatcher.invoke(DispatchContextPtr::new(dispatch_context), message_context) }
     }
 }
 

@@ -10,10 +10,10 @@ use core::fmt::Formatter;
 /// this into a concrete type.
 #[derive(Debug)]
 pub enum AnswerSender<T: Message> {
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "tokio-answer")]
     Tokio(tokio::sync::oneshot::Sender<T::Answer>),
 
-    #[cfg(not(any(feature = "tokio")))]
+    #[cfg(not(any(feature = "tokio-answer")))]
     #[doc(hidden)]
     Never(#[allow(private_interfaces)] Empty<T>),
 }
@@ -21,10 +21,10 @@ pub enum AnswerSender<T: Message> {
 /// The reply receiver used to receive replies.
 #[derive(Debug)]
 pub enum AnswerReceiver<T: Message> {
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "tokio-answer")]
     Tokio(tokio::sync::oneshot::Receiver<T::Answer>),
 
-    #[cfg(not(any(feature = "tokio")))]
+    #[cfg(not(any(feature = "tokio-answer")))]
     #[doc(hidden)]
     Never(#[allow(private_interfaces)] Empty<T>),
 }
@@ -33,9 +33,9 @@ impl<T: Message> AnswerReceiver<T> {
     /// Receive the answer.
     pub async fn recv(self) -> Option<T::Answer> {
         match self {
-            #[cfg(feature = "tokio")]
+            #[cfg(feature = "tokio-answer")]
             AnswerReceiver::Tokio(tokio) => tokio.await.ok(),
-            #[cfg(not(any(feature = "tokio")))]
+            #[cfg(not(any(feature = "tokio-answer")))]
             AnswerReceiver::Never(_) => unreachable!(),
         }
     }
@@ -43,16 +43,16 @@ impl<T: Message> AnswerReceiver<T> {
     /// Receive the answer blocking.
     pub fn blocking_recv(self) -> Option<T::Answer> {
         match self {
-            #[cfg(feature = "tokio")]
+            #[cfg(feature = "tokio-answer")]
             AnswerReceiver::Tokio(tokio) => tokio.blocking_recv().ok(),
-            #[cfg(not(any(feature = "tokio")))]
+            #[cfg(not(any(feature = "tokio-answer")))]
             AnswerReceiver::Never(_) => unreachable!(),
         }
     }
 }
 
 /// Create an answer channel.
-#[cfg(feature = "tokio")]
+#[cfg(feature = "tokio-answer")]
 pub fn answer_channel<T: Message>() -> (AnswerSender<T>, AnswerReceiver<T>) {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     (AnswerSender::Tokio(sender), AnswerReceiver::Tokio(receiver))

@@ -6,6 +6,13 @@ resolver = "3"
 # Async RT
 tokio = { version = "1.52.0", default-features = false }
 pin-project = "1.1.11"
+futures = { version = "0.3.32", default-features = false }
+
+# Async channels
+kanal = { version = "0.1.1", default-features = false }
+
+# Utilities (mostly for non-std replacements)
+once_cell = { version = "1.21.4", default-features = false }
 
 # Observability
 tracing = { version = "0.1.44", default-features = false }
@@ -16,7 +23,7 @@ proc-macro2 = "1.0.106"
 proc-macro-error = "1.0.4"
 quote = "1.0.45"
 syn = "2.0.117"
-
+typed-builder = "0.23.2"
 seq-macro = "0.3.6"
 
 # Error handling

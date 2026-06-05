@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub mod message;
 pub mod actor;
+pub mod runtime;
 
 #[allow(unused)] // Used by macros, not sure why this is not detected...
 pub(crate) use factories_rtti;

@@ -1,22 +1,34 @@
+use crate::actor::channel::DynActorChannel;
 use crate::actor::dispatch::ActorMessageDispatcher;
 use crate::actor::rtti::ActorRtti;
-use crate::actor::{Actor, ActorRuntimeBinder, DynActorChannel};
+use crate::actor::state::SharedActorState;
+use crate::actor::task::ActorTaskHandle;
+use crate::actor::{Actor, ActorRuntimeBinder};
 use crate::message::rtti::MessageRtti;
 use core::fmt::{Debug, Formatter};
 
-pub(crate) struct ActorIdentity<A: Actor> {
+pub(crate) struct ActorIdentity<A: Actor + ?Sized> {
     pub rtti: &'static ActorRtti,
     pub channel: A::Channel,
     pub binder: A::RuntimeBinder,
+    pub task: ActorTaskHandle,
+    pub shared: SharedActorState<A>,
 }
 
-impl<A: Actor> ActorIdentity<A> {
+impl<A: Actor + ?Sized> ActorIdentity<A> {
     /// Create a new actor identity pointing to the given channel.
-    pub const fn new(channel: A::Channel, binder: A::RuntimeBinder) -> Self {
+    pub const fn new(
+        channel: A::Channel,
+        binder: A::RuntimeBinder,
+        task: ActorTaskHandle,
+        shared: SharedActorState<A>,
+    ) -> Self {
         Self {
             rtti: A::RTTI,
             channel,
             binder,
+            task,
+            shared,
         }
     }
 }
@@ -30,6 +42,8 @@ pub(crate) trait AnyActorIdentity: Debug {
 
     /// Retrieve the dynamic dispatched channel.
     fn dyn_channel(&self) -> &dyn DynActorChannel;
+
+    fn task(&self) -> &ActorTaskHandle;
 }
 
 impl<A: Actor> AnyActorIdentity for ActorIdentity<A> {
@@ -43,6 +57,10 @@ impl<A: Actor> AnyActorIdentity for ActorIdentity<A> {
 
     fn dyn_channel(&self) -> &dyn DynActorChannel {
         &self.channel
+    }
+
+    fn task(&self) -> &ActorTaskHandle {
+        &self.task
     }
 }
 
