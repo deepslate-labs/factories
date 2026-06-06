@@ -5,6 +5,7 @@
 
 mod actor;
 mod message;
+mod messages;
 mod util;
 
 /// Derive [`Actor`] for a type, including its RTTI declaration.
@@ -66,4 +67,47 @@ pub fn derive_actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 #[proc_macro_derive(Message, attributes(message))]
 pub fn derive_message(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     message::derive_message(syn::parse_macro_input!(input as syn::DeriveInput)).into()
+}
+
+/// Method-style message handlers on an inherent impl block.
+///
+/// Every method marked `#[handler]` additionally becomes a message handler.
+/// The macro is additive: the impl block is re-emitted unchanged (markers
+/// stripped), so handler methods stay plain, directly callable methods.
+///
+/// For each handler the macro generates:
+///
+/// - a message struct named after the method (`do_something` -> `DoSomething`)
+///   with one public field per parameter, `Answer` = return type and the
+///   method's visibility - unless `#[handler(message = Existing)]` reuses an
+///   existing message, in which case the parameter names select the fields of
+///   that message to decompose (checked by the type system, extra fields are
+///   ignored).
+/// - a `MessageHandler` impl that calls the method through the actor guard.
+///   The receiver picks the access mode: `&self` -> `Shared`, `&mut self` ->
+///   `Exclusive`. `async fn` is awaited. A non-`()` return value is sent as
+///   the answer if one was requested.
+/// - a dynamic-dispatch registration (expands to nothing when the
+///   `dynamic-dispatch` feature of `factories_actor` is disabled, mirroring
+///   the default runtime binder).
+///
+/// ```ignore
+/// #[factories_actor::messages]
+/// impl Calc {
+///     #[handler]
+///     fn add_value(&mut self, value: u32) {
+///         self.value += value;
+///     }
+///
+///     #[handler(message = SetConfig)]
+///     fn set_config(&mut self, name: String, value: u32) { /* ... */ }
+/// }
+/// ```
+#[proc_macro_error::proc_macro_error]
+#[proc_macro_attribute]
+pub fn messages(
+    attrs: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    messages::messages(attrs.into(), syn::parse_macro_input!(input as syn::ItemImpl)).into()
 }

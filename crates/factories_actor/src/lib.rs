@@ -11,6 +11,12 @@ pub mod actor;
 pub mod runtime;
 pub mod spawn;
 
+/// Method-style message handlers: marks an inherent impl block, every
+/// `#[handler]` method additionally becomes a message handler. See the macro
+/// documentation for details.
+#[cfg(feature = "derive")]
+pub use factories_actor_macro::messages;
+
 // Re-exported for use by the declaration macros; not public API.
 #[doc(hidden)]
 pub use factories_rtti;
