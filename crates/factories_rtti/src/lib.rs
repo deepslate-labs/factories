@@ -2,8 +2,10 @@
 
 extern crate alloc;
 
-mod rtti;
-mod autoref_check;
+// Public so the declaration macros can reference items via `$crate::rtti::...`
+// from foreign crates; the wildcard re-exports below stay the primary surface.
+pub mod rtti;
+pub mod autoref_check;
 
 pub use rtti::*;
 pub use autoref_check::*;

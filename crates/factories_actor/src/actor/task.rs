@@ -105,8 +105,10 @@ impl ActorTaskHandle {
 
     /// Wait for the running task to terminate.
     ///
-    /// This does not initiate termination.
-    pub fn wait_for_termination(self) -> WaitForTerminationFut {
+    /// This does not initiate termination. The returned future is independent
+    /// of this handle - but note that *dropping* the handle aborts the task,
+    /// so keep it alive while waiting for a graceful termination.
+    pub fn wait_for_termination(&self) -> WaitForTerminationFut {
         // SAFETY: At creation time the caller has ensured that wait_for_termination takes handle
         unsafe { (self.wait_for_termination)(&self.handle) }
     }

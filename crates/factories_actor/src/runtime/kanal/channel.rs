@@ -1,9 +1,9 @@
 use crate::actor::channel::{
-    ActorChannel, ActorChannelSendError, ActorChannelSendResult, ActorChannelSendable, ActorMailbox,
+    ActorChannel, ActorChannelSendError, ActorChannelSendResult, ActorChannelSendable,
 };
 use crate::actor::dispatch::DispatchedActorMessage;
-use crate::runtime::standard::StandardChannel;
-use crate::runtime::{ActorMessagePriorityRouter, NoPriorityRouter};
+use crate::runtime::routing::{ActorMessagePriorityRouter, NoPriorityRouter};
+use crate::spawn::{ActorMailbox, CreatableChannel};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
@@ -109,7 +109,7 @@ impl<const SEND_LANES: usize, R: ActorMessagePriorityRouter> ActorChannel
     }
 }
 
-impl<const SEND_LANES: usize, R: ActorMessagePriorityRouter> StandardChannel
+impl<const SEND_LANES: usize, R: ActorMessagePriorityRouter> CreatableChannel
     for KanalActorChannel<SEND_LANES, R>
 {
     type CreationOptions = KanalActorChannelOptions<SEND_LANES, R>;
@@ -194,6 +194,12 @@ impl<'a> KanalActorChannelSender<'a> {
 
     /// Send a message asynchronously through this sender.
     pub async fn send(&self, message: DispatchedActorMessage) -> ActorChannelSendResult {
+        // This channel transports messages across threads, so per the
+        // `ActorChannel` sendability contract the envelope must be sendable.
+        if !message.envelope().is_sendable() {
+            return Err(ActorChannelSendError::NotSendable);
+        }
+
         self.sender
             .as_async()
             .send(message)
@@ -203,6 +209,11 @@ impl<'a> KanalActorChannelSender<'a> {
 
     /// Send a message blocking through this sender.
     pub fn blocking_send(&self, message: DispatchedActorMessage) -> ActorChannelSendResult {
+        // See `send` for why this check exists.
+        if !message.envelope().is_sendable() {
+            return Err(ActorChannelSendError::NotSendable);
+        }
+
         self.sender.send(message).map_err(Self::handle_send_error)
     }
 

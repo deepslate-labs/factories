@@ -1,11 +1,10 @@
 use crate::actor::channel::{
     ActorChannel, ActorChannelSendError, ActorChannelSendable, DynActorChannelSendable,
 };
-use crate::actor::dispatch::{
-    ActorMessageDispatcher, DispatchedActorMessage, DispatchedActorMessageContext,
-};
+use crate::actor::dispatch::{DispatchedActorMessage, DispatchedActorMessageContext};
 use crate::actor::identity::{ActorIdentity, AnyActorIdentity};
 use crate::actor::rtti::ActorRtti;
+use crate::actor::state::SharedActorState;
 use crate::actor::task::ActorTaskHandle;
 use crate::actor::{Actor, MessageHandler};
 use crate::message::Message;
@@ -21,6 +20,25 @@ use thiserror::Error;
 pub struct TypedActorHandle<A: Actor>(Arc<ActorIdentity<A>>);
 
 impl<A: Actor> TypedActorHandle<A> {
+    /// Assemble an actor handle from its parts.
+    ///
+    /// This is the layer-0 entry point used by the actor builder internally and
+    /// by hand-crafted assembly. The caller is responsible for having spawned a
+    /// run loop that consumes the mailbox side of `channel` and reports into
+    /// `shared`.
+    pub fn assemble(
+        channel: A::Channel,
+        binder: A::RuntimeBinder,
+        shared: SharedActorState<A>,
+    ) -> Self {
+        Self(Arc::new(ActorIdentity::new(channel, binder, shared)))
+    }
+
+    /// Access the shared state of this actor (lifecycle, failure error, task).
+    pub fn state(&self) -> &SharedActorState<A> {
+        &self.0.shared
+    }
+
     /// Type erase the actor handle into an untyped local handle.
     pub fn erase_type_local(self) -> AnyLocalActorHandle
     where
@@ -55,15 +73,18 @@ impl<A: Actor> TypedActorHandle<A> {
     where
         A: MessageHandler<M>,
     {
-        let dispatcher = ActorMessageDispatcher::bind_static::<A, M>();
+        let dispatcher = <A as MessageHandler<M>>::DISPATCHER.into_dispatcher();
 
-        ActorChannel::prepare_send(
-            self.channel(),
+        // SAFETY: The dispatcher is `A`'s declaration-checked static dispatcher
+        //         for `M`, and the envelope is constructed from an `M` right here.
+        let message = unsafe {
             DispatchedActorMessage::new(
                 dispatcher,
                 DispatchedActorMessageContext::of(MessageEnvelope::new(message, answer_sender)),
-            ),
-        )
+            )
+        };
+
+        ActorChannel::prepare_send(self.channel(), message)
     }
 
     /// Send a message to the actor without expecting a reply.
@@ -132,12 +153,19 @@ pub struct AnyLocalActorHandle(Arc<dyn AnyActorIdentity>);
 impl AnyLocalActorHandle {
     /// Try to convert this handle into a shared handle.
     ///
-    /// This fails if the channel implementation is not Send + Sync.
+    /// This fails if the channel or error type is not Send + Sync.
     pub fn into_shared(self) -> Result<AnyActorHandle, Self> {
-        let channel_rtti = self.0.rtti().channel();
+        let rtti = self.0.rtti();
+        let channel_rtti = rtti.channel();
+        let error_rtti = rtti.error();
 
-        if channel_rtti.is_send() && channel_rtti.is_sync() {
-            // SAFETY: We just checked that the channel is Send and Sync.
+        if channel_rtti.is_send()
+            && channel_rtti.is_sync()
+            && error_rtti.is_send()
+            && error_rtti.is_sync()
+        {
+            // SAFETY: We just checked that the channel and error type are Send and
+            //         Sync, which is everything `erase_type` requires statically.
             let this = unsafe {
                 core::mem::transmute::<_, Arc<dyn AnyActorIdentity + Send + Sync>>(self.0)
             };
@@ -252,7 +280,7 @@ pub trait ActorHandle: ActorHandleBase {
     }
 
     /// Bind the dispatcher for the given message type.
-    fn bind_dispatcher(&self, message: &MessageRtti) -> Option<ActorMessageDispatcher> {
+    fn bind_dispatcher(&self, message: &MessageRtti) -> Option<crate::actor::dispatch::ActorMessageDispatcher> {
         self.identity().bind(message)
     }
 
@@ -278,15 +306,18 @@ pub trait ActorHandle: ActorHandleBase {
     ) -> Option<Box<dyn DynActorChannelSendable<'_> + '_>> {
         let dispatcher = self.bind_dispatcher(message.rtti())?;
 
-        let dispatched_message =
-            DispatchedActorMessage::new(dispatcher, DispatchedActorMessageContext::of(message));
+        // SAFETY: The dispatcher was just bound by the actor's runtime binder,
+        //         whose contract covers type coherence and the run loop's demand.
+        let dispatched_message = unsafe {
+            DispatchedActorMessage::new(dispatcher, DispatchedActorMessageContext::of(message))
+        };
 
         // SAFETY: We just bound the dispatcher, so the message can be dispatched.
         Some(unsafe { self.prepare_send_dynamic_dispatched(dispatched_message) })
     }
 
-    /// Retrieve the task handle of the actor task.
-    fn task(&self) -> &ActorTaskHandle {
+    /// Retrieve the task handle of the actor task, if one was attached.
+    fn task(&self) -> Option<&ActorTaskHandle> {
         self.identity().task()
     }
 }

@@ -29,6 +29,23 @@ pub enum AnswerReceiver<T: Message> {
     Never(#[allow(private_interfaces)] Empty<T>),
 }
 
+impl<T: Message> AnswerSender<T> {
+    /// Send the answer to the asking party.
+    ///
+    /// Returns the answer back if the receiving side is no longer listening.
+    pub fn send(self, answer: T::Answer) -> Result<(), T::Answer> {
+        match self {
+            #[cfg(feature = "tokio-answer")]
+            AnswerSender::Tokio(tokio) => tokio.send(answer),
+            #[cfg(not(any(feature = "tokio-answer")))]
+            AnswerSender::Never(_) => {
+                let _ = answer;
+                unreachable!()
+            }
+        }
+    }
+}
+
 impl<T: Message> AnswerReceiver<T> {
     /// Receive the answer.
     pub async fn recv(self) -> Option<T::Answer> {
@@ -78,5 +95,28 @@ union Empty<T: Message> {
 impl<T: Message> core::fmt::Debug for Empty<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_tuple("Emtpy").finish()
+    }
+}
+
+#[cfg(all(test, feature = "tokio-answer"))]
+mod tests {
+    use crate::declare_message;
+
+    #[derive(Debug)]
+    struct Ping;
+    declare_message!(Ping, u32);
+
+    #[test]
+    fn answer_send_recv_roundtrip() {
+        let (tx, rx) = super::answer_channel::<Ping>();
+        tx.send(42).expect("receiver alive");
+        assert_eq!(rx.blocking_recv(), Some(42));
+    }
+
+    #[test]
+    fn answer_send_after_receiver_dropped_returns_answer() {
+        let (tx, rx) = super::answer_channel::<Ping>();
+        drop(rx);
+        assert_eq!(tx.send(7), Err(7));
     }
 }

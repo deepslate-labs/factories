@@ -9,7 +9,15 @@ pub type PinnedActorChannelSendFuture<'a> =
 
 /// Implementation of an actor channel.
 ///
-/// Most channels will also implement `StandardChannel` as a common extension.
+/// Most channels will also implement `CreatableChannel` as a common extension.
+///
+/// # Sendability contract
+/// [`DispatchedActorMessage`] is unconditionally `Send` as a carrier type. A channel
+/// implementation that transports deliveries across threads must therefore verify
+/// [`crate::message::envelope::MessageEnvelope::is_sendable`] before doing so and
+/// reject the message with [`ActorChannelSendError::NotSendable`] otherwise.
+/// Channels whose construction guarantees that sender and receiver stay on one
+/// thread may skip the check.
 #[must_use = "The message is not sent unless send or send_blocking is called"]
 pub trait ActorChannel {
     /// Prepare sending a message through the channel.
@@ -93,18 +101,16 @@ pub enum ActorChannelSendError {
     #[error("message is not routable")]
     Unroutable,
 
+    /// The message cannot cross threads to reach this actor.
+    ///
+    /// Returned by channels that transport messages across threads when the
+    /// envelope is not sendable (`!Send` message, or `!Send` answer sender on
+    /// an ask).
+    #[error("message is not sendable across threads")]
+    NotSendable,
+
     /// Other, channel-specific error.
     #[error(transparent)]
     Other(Box<dyn core::error::Error + Send + Sync>),
 }
 
-/// Standard mailbox interface for an actor channel.
-///
-/// This type is provided so that run loops can be largely generic over the actor channel.
-/// Nevertheless, it is possible to write run loops that use a completely custom channel
-/// implementation, and as such this trait is provided largely for convenience and is not a hard
-/// requirement for actor channels.
-pub trait ActorMailbox {
-    /// Receive a message from the mailbox.
-    fn receive(&mut self) -> impl Future<Output = Option<DispatchedActorMessage>> + '_;
-}

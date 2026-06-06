@@ -9,7 +9,7 @@ full-runtime = ["kanal-runtime", "tokio-answer", "tokio-runtime"]
 # This is pretty lightweight, only pulls in tokio sync and not the runtime
 tokio-answer = ["dep:tokio", "tokio/sync"]
 kanal-runtime = ["dep:kanal", "kanal/async"]
-tokio-runtime = ["dep:tokio", "tokio/rt"]
+tokio-runtime = ["dep:tokio", "tokio/rt", "tokio/sync"]
 tracing = ["dep:tracing"]
 
 [dependencies]
@@ -26,3 +26,11 @@ seq-macro = { workspace = true }
 typed-builder = { workspace = true }
 
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+paste = { workspace = true }
+
+# Tests run on std targets; provide the critical-section implementation that the
+# no_std once_cell configuration expects the final binary to supply.
+critical-section = { version = "1", features = ["std"] }

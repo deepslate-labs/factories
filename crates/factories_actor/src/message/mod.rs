@@ -20,7 +20,7 @@ pub unsafe trait Message where Self: Sized + 'static {
 #[macro_export]
 macro_rules! declare_message {
     ($name:ident, $answer:ty) => {
-        paste::paste! {
+        $crate::paste::paste! {
             // SAFETY: The macro generates the correct data automatically
             $crate::message::rtti::declare_message_rtti!([<$name:snake:upper _RTTI>], $name);
 

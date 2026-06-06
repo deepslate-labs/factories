@@ -1,6 +1,7 @@
-use crate::actor::dispatch::ActorMessageDispatcher;
+use crate::actor::dispatch::{ActorMessageDispatcher, StaticDispatcher};
 use crate::actor::rtti::ActorRtti;
 use crate::message::Message;
+use crate::message::channel::AnswerSender;
 use crate::message::envelope::MessageEnvelope;
 use crate::message::rtti::MessageRtti;
 use channel::ActorChannel;
@@ -103,6 +104,46 @@ pub trait AccessMode<A: Actor + ?Sized> {
         Self: 'a;
 }
 
+/// A demand a run loop places on the message handling machinery it drives.
+///
+/// Demands are enforced at dispatcher *declaration* sites (see
+/// [`declare_static_dispatcher!`](crate::declare_static_dispatcher)), where the
+/// concrete handler future types are known and their auto traits leak. They never
+/// appear in caller-facing signatures - whether a handler future is `Send` is the
+/// run loop's problem, not the sender's.
+pub trait DispatchDemand {}
+
+/// Demand of run loops that drive handler futures on tasks which may migrate
+/// between threads (e.g. work-stealing executors).
+#[derive(Debug, Default, Copy, Clone)]
+pub struct ThreadSafe;
+
+impl DispatchDemand for ThreadSafe {}
+
+/// Demand of run loops that drive handler futures on a single thread.
+#[derive(Debug, Default, Copy, Clone)]
+pub struct ThreadLocal;
+
+impl DispatchDemand for ThreadLocal {}
+
+/// A future satisfying the given dispatch demand.
+#[diagnostic::on_unimplemented(
+    message = "this handler future does not satisfy the `{D}` demand of the actor's run loop",
+    note = "run loops with a `ThreadSafe` demand require handler futures to be `Send`"
+)]
+pub trait DemandedFuture<D: DispatchDemand>: Future {}
+
+impl<F: Future + Send> DemandedFuture<ThreadSafe> for F {}
+impl<F: Future> DemandedFuture<ThreadLocal> for F {}
+
+/// Identity helper that enforces a dispatch demand on a future at compile time.
+///
+/// Used by dispatcher declaration macros; the returned future is the input,
+/// unchanged - only the bound matters.
+pub const fn demand_check<D: DispatchDemand, F: DemandedFuture<D>>(fut: F) -> F {
+    fut
+}
+
 /// Context passed to a message handler of an actor.
 pub struct MessageHandlerContext<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A> + 'a> {
     actor_access: E::Guard<'a>,
@@ -140,11 +181,59 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
             _data: PhantomData,
         }
     }
+
+    /// Access the actor guard.
+    pub fn guard(&self) -> &E::Guard<'a> {
+        &self.actor_access
+    }
+
+    /// Mutably access the actor guard.
+    pub fn guard_mut(&mut self) -> &mut E::Guard<'a> {
+        &mut self.actor_access
+    }
+
+    /// Access the message payload.
+    pub fn message(&self) -> &M {
+        // SAFETY: Construction of the context guarantees the envelope carries an M.
+        unsafe { self.envelope.payload_unchecked::<M>() }
+    }
+
+    /// Decompose the context into the actor guard, the message and the answer sender.
+    pub fn into_parts(self) -> (E::Guard<'a>, M, Option<AnswerSender<M>>) {
+        // SAFETY: Construction of the context guarantees the envelope carries an M.
+        let (message, answer_sender) = unsafe { self.envelope.unwrap_unchecked::<M>() };
+        (self.actor_access, message, answer_sender)
+    }
+
+    /// Decompose the context intot he actor guard and the message envelope.
+    pub fn into_parts_with_envelope(self) -> (E::Guard<'a>, MessageEnvelope) {
+        (self.actor_access, self.envelope)
+    }
+}
+
+// SAFETY: The guard's sendability is honestly reflected by the where-clause. The
+//         envelope's sendability is guaranteed by the boundary contracts: channels
+//         that transport deliveries across threads verify `MessageEnvelope::is_sendable`
+//         before doing so, and the runtime binder validates dynamic dispatch. This
+//         mirrors the `unsafe impl Send for DispatchedActorMessage` justification.
+unsafe impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> Send
+    for MessageHandlerContext<'a, M, A, E>
+where
+    E::Guard<'a>: Send,
+{
 }
 
 /// Implementation of a message handler for an actor.
 pub trait MessageHandler<M: Message>: Actor {
     type AccessMode: AccessMode<Self> + 'static;
+
+    /// The statically bound dispatcher for this actor/message pair.
+    ///
+    /// Declared via [`declare_static_dispatcher!`](crate::declare_static_dispatcher),
+    /// which enforces the run loop's [`DispatchDemand`] where the concrete future
+    /// types are known. Typed handles use this constant to skip the runtime binder
+    /// at statically known dispatch sites.
+    const DISPATCHER: StaticDispatcher<Self, M>;
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, M, Self, Self::AccessMode>,
@@ -162,7 +251,8 @@ pub trait MessageHandler<M: Message>: Actor {
 /// # Safety
 /// The implementation must ensure that the bound handler will be able to handle
 /// envelopes of the given message type and that the handler is invokable on the
-/// actor thread.
+/// actor thread. The bound dispatcher must satisfy the demand of the target
+/// actor's run loop (see [`DispatchDemand`]).
 pub unsafe trait ActorRuntimeBinder: Send + Sync {
     /// Bind the handler for the given message.
     ///
@@ -176,6 +266,18 @@ pub unsafe trait ActorRuntimeBinder: Send + Sync {
     fn bind(&self, message: &MessageRtti) -> Option<ActorMessageDispatcher>;
 }
 
+/// Runtime binder that never binds: the actor only supports statically
+/// dispatched messages, dynamic dispatch always fails to bind.
+#[derive(Debug, Default, Copy, Clone)]
+pub struct StaticOnlyBinder;
+
+// SAFETY: This binder never produces a dispatcher, so there is nothing to uphold.
+unsafe impl ActorRuntimeBinder for StaticOnlyBinder {
+    fn bind(&self, _message: &MessageRtti) -> Option<ActorMessageDispatcher> {
+        None
+    }
+}
+
 pub trait ActorRunLoop<A: Actor + ?Sized> {
     /// The dispatch context type owned by the run loop.
     ///
@@ -184,6 +286,11 @@ pub trait ActorRunLoop<A: Actor + ?Sized> {
     /// run loop owns its dispatch context outright, so this is rarely a real
     /// constraint.
     type DispatchContext: ActorRunLoopDispatchContext<A> + 'static;
+
+    /// The demand this run loop places on handler futures.
+    ///
+    /// Enforced at dispatcher declaration sites; see [`DispatchDemand`].
+    type Demand: DispatchDemand;
 }
 
 /// The dispatch-side view of an actor's run loop.

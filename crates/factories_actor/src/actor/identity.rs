@@ -11,7 +11,6 @@ pub(crate) struct ActorIdentity<A: Actor + ?Sized> {
     pub rtti: &'static ActorRtti,
     pub channel: A::Channel,
     pub binder: A::RuntimeBinder,
-    pub task: ActorTaskHandle,
     pub shared: SharedActorState<A>,
 }
 
@@ -20,14 +19,12 @@ impl<A: Actor + ?Sized> ActorIdentity<A> {
     pub const fn new(
         channel: A::Channel,
         binder: A::RuntimeBinder,
-        task: ActorTaskHandle,
         shared: SharedActorState<A>,
     ) -> Self {
         Self {
             rtti: A::RTTI,
             channel,
             binder,
-            task,
             shared,
         }
     }
@@ -43,7 +40,8 @@ pub(crate) trait AnyActorIdentity: Debug {
     /// Retrieve the dynamic dispatched channel.
     fn dyn_channel(&self) -> &dyn DynActorChannel;
 
-    fn task(&self) -> &ActorTaskHandle;
+    /// Retrieve the task handle of the actor task, if one was attached.
+    fn task(&self) -> Option<&ActorTaskHandle>;
 }
 
 impl<A: Actor> AnyActorIdentity for ActorIdentity<A> {
@@ -59,8 +57,8 @@ impl<A: Actor> AnyActorIdentity for ActorIdentity<A> {
         &self.channel
     }
 
-    fn task(&self) -> &ActorTaskHandle {
-        &self.task
+    fn task(&self) -> Option<&ActorTaskHandle> {
+        self.shared.task()
     }
 }
 

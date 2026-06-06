@@ -11,6 +11,7 @@ pub struct ActorRtti {
     type_id: TypeId,
 
     channel_rtti: ChannelRtti,
+    error_rtti: SendSyncRtti,
 }
 
 impl ActorRtti {
@@ -20,18 +21,39 @@ impl ActorRtti {
     /// The caller must ensure that the provided RTTI actually matches the actor types.
     pub const unsafe fn new_named<T: Actor + 'static>(
         name: &'static str,
-        channel_rtti: ChannelRtti
+        channel_rtti: ChannelRtti,
+        error_rtti: SendSyncRtti,
     ) -> Self {
         Self {
             name,
             type_id: TypeId::of::<T>(),
-            channel_rtti
+            channel_rtti,
+            error_rtti,
         }
+    }
+
+    /// Retrieve the name of the actor type.
+    ///
+    /// Note that this name isn't necessarily unique, and is mostly intended for
+    /// debugging purposes. Use the address of the RTTI information itself to
+    /// determine its identity.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Retrieve the type id of the actor type.
+    pub const fn type_id(&self) -> TypeId {
+        self.type_id
     }
 
     /// Retrieve the actors channel RTTI.
     pub const fn channel(&self) -> ChannelRtti {
         self.channel_rtti
+    }
+
+    /// Retrieve the thread-safety RTTI of the actor's error type.
+    pub const fn error(&self) -> SendSyncRtti {
+        self.error_rtti
     }
 
     /// Retrieve the identity of this RTTI.
@@ -74,15 +96,20 @@ impl ChannelRtti {
 #[macro_export]
 macro_rules! declare_actor_rtti {
     ($name:ident, $type:ty) => {
-        pub const $name: &'static $crate::actor::rtti::Actor = const {
-            const CHANNEL_RTTI: $crate::actor::rtti::ChannelRtti = $crate::actor::rtti::ChannelRtti::new(
-                $crate::factories_rtti::create_send_sync_rtti!($type)
-            );
+        pub const $name: &'static $crate::actor::rtti::ActorRtti = const {
+            const CHANNEL_RTTI: $crate::actor::rtti::ChannelRtti =
+                $crate::actor::rtti::ChannelRtti::new($crate::factories_rtti::create_send_sync_rtti!(
+                    <$type as $crate::actor::Actor>::Channel
+                ));
+
+            const ERROR_RTTI: $crate::factories_rtti::SendSyncRtti =
+                $crate::factories_rtti::create_send_sync_rtti!(<$type as $crate::actor::Actor>::Error);
 
             static VALUE: $crate::actor::rtti::ActorRtti = unsafe {
                 $crate::actor::rtti::ActorRtti::new_named::<$type>(
                     stringify!($type),
-                    CHANNEL_RTTI
+                    CHANNEL_RTTI,
+                    ERROR_RTTI,
                 )
             };
             &VALUE
