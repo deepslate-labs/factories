@@ -20,15 +20,27 @@ pub struct SequentialRunLoop<A: Actor<RunLoop = Self> + ?Sized> {
 }
 
 impl<A: Actor<RunLoop = Self> + ?Sized> SequentialRunLoop<A> {
-    pub fn new(lock_strategy: A::LockStrategy) -> Self {
+    pub fn new(lock_strategy: A::LockStrategy, shared: SharedActorState<A>) -> Self {
         Self {
-            dispatch_context: SequentialRunLoopDispatchContext { lock_strategy },
+            dispatch_context: SequentialRunLoopDispatchContext {
+                lock_strategy,
+                shared,
+            },
         }
     }
 
-    /// Drive the loop until the mailbox closes.
+    /// Drive the loop until the mailbox closes or a handler fails the actor.
     pub async fn run(self, mut mailbox: impl ActorMailbox) {
-        while let Some(message) = mailbox.receive().await {
+        loop {
+            // A handler failed the actor: stop pulling messages.
+            if self.dispatch_context.shared.get_error().is_some() {
+                return;
+            }
+
+            let Some(message) = mailbox.receive().await else {
+                return;
+            };
+
             // SAFETY: The message was sent to our mailbox, and we are in the actor
             //         loop, thus this message can be dispatched onto our loop.
             let acquire = unsafe { message.dispatch_onto_loop::<A>(&self.dispatch_context) };
@@ -103,7 +115,7 @@ where
 
             shared.transition_running();
 
-            let this = Self::new(actor.into());
+            let this = Self::new(actor.into(), shared);
             this.run(mailbox).await;
         }
     }
@@ -111,6 +123,7 @@ where
 
 pub struct SequentialRunLoopDispatchContext<A: Actor + ?Sized> {
     lock_strategy: A::LockStrategy,
+    shared: SharedActorState<A>,
 }
 
 impl<A: Actor + ?Sized> Debug for SequentialRunLoopDispatchContext<A>
@@ -127,5 +140,9 @@ where
 impl<A: Actor + ?Sized> ActorRunLoopDispatchContext<A> for SequentialRunLoopDispatchContext<A> {
     fn lock_strategy(&self) -> &A::LockStrategy {
         &self.lock_strategy
+    }
+
+    fn shared_state(&self) -> &SharedActorState<A> {
+        &self.shared
     }
 }

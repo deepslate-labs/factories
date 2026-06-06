@@ -191,7 +191,9 @@ macro_rules! declare_static_dispatcher {
                 //         carries a message of type `$message`.
                 let ctx = unsafe {
                     $crate::actor::MessageHandlerContext::<$message, $actor, Mode>::new_unchecked(
-                        guard, envelope,
+                        guard,
+                        $crate::actor::ActorRunLoopDispatchContext::shared_state(dispatch_context),
+                        envelope,
                     )
                 };
 

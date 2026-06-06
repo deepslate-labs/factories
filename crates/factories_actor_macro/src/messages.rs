@@ -13,6 +13,19 @@ struct HandlerConfig {
     /// Answer type of a generated message whose handler answers manually -
     /// there is no return type to infer it from.
     answer: Option<Type>,
+    /// `die_on_err`: a handler error fails the actor.
+    die_on_err: Option<(DieMode, Span)>,
+}
+
+/// What happens to a `die_on_err` handler's error.
+#[derive(Copy, Clone, PartialEq)]
+enum DieMode {
+    /// Bare `die_on_err`: the full result stays the answer, the error is
+    /// *also* cloned into the actor's death.
+    Forward,
+    /// `die_on_err = consume`: the death consumes the error, the answer
+    /// becomes the Ok part.
+    Consume,
 }
 
 /// What a handler parameter receives.
@@ -29,10 +42,12 @@ enum ParamBinding {
     Message,
     /// `#[envelope]`: the sealed message envelope, e.g. for forwarding.
     Envelope,
+    /// `#[context]`: the actor's own runtime services (`ActorContext`).
+    Context,
 }
 
 /// Parameter markers known to the macro; stripped from the re-emitted method.
-const PARAM_MARKERS: &[&str] = &["answer", "message", "envelope"];
+const PARAM_MARKERS: &[&str] = &["answer", "message", "envelope", "context"];
 
 pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     if !attrs.is_empty() {
@@ -146,8 +161,32 @@ fn expand_handler(
                 util::set_value(&mut config.message, &meta)
             } else if meta.path.is_ident("answer") {
                 util::set_value(&mut config.answer, &meta)
+            } else if meta.path.is_ident("die_on_err") {
+                let mode = if meta.input.peek(syn::Token![=]) {
+                    let value: Ident = meta.value()?.parse()?;
+                    if value == "consume" {
+                        DieMode::Consume
+                    } else {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            "unknown `die_on_err` mode, expected `consume`",
+                        ));
+                    }
+                } else {
+                    DieMode::Forward
+                };
+
+                if config.die_on_err.is_some() {
+                    proc_macro_error::emit_error!(meta.path.span(), "duplicate key");
+                } else {
+                    config.die_on_err = Some((mode, meta.path.span()));
+                }
+
+                Ok(())
             } else {
-                Err(meta.error("unknown key, expected one of `message`, `answer`"))
+                Err(meta.error(
+                    "unknown key, expected one of `message`, `answer`, `die_on_err`",
+                ))
             }
         });
 
@@ -202,6 +241,7 @@ fn expand_handler(
     let mut answer_param: Option<Span> = None;
     let mut message_param: Option<Span> = None;
     let mut envelope_param: Option<Span> = None;
+    let mut context_param: Option<Span> = None;
 
     for argument in signature.inputs.iter().skip(1) {
         let FnArg::Typed(argument) = argument else {
@@ -217,11 +257,13 @@ fn expand_handler(
                 ParamBinding::Message
             } else if attr.path().is_ident("envelope") {
                 ParamBinding::Envelope
+            } else if attr.path().is_ident("context") {
+                ParamBinding::Context
             } else {
                 proc_macro_error::emit_error!(
                     attr.span(),
                     "unknown parameter attribute, expected one of \
-                     `#[answer]`, `#[message]`, `#[envelope]`"
+                     `#[answer]`, `#[message]`, `#[envelope]`, `#[context]`"
                 );
                 return None;
             };
@@ -247,6 +289,7 @@ fn expand_handler(
                     ParamBinding::Answer => (&mut answer_param, "#[answer]"),
                     ParamBinding::Message => (&mut message_param, "#[message]"),
                     ParamBinding::Envelope => (&mut envelope_param, "#[envelope]"),
+                    ParamBinding::Context => (&mut context_param, "#[context]"),
                     ParamBinding::Field(..) => unreachable!("markers never produce fields"),
                 };
 
@@ -291,11 +334,17 @@ fn expand_handler(
     let manual_answer = answer_param.is_some() || envelope_param.is_some();
 
     if let Some(span) = envelope_param {
-        if bindings.len() > 1 {
+        // `#[context]` is fine alongside the envelope: it is not derived from
+        // the message. Everything else is.
+        let conflicting = bindings
+            .iter()
+            .any(|binding| !matches!(binding, ParamBinding::Envelope | ParamBinding::Context));
+
+        if conflicting {
             proc_macro_error::emit_error!(
                 span,
                 "#[envelope] receives the sealed envelope, it cannot be combined with \
-                 other parameters"
+                 message-derived parameters"
             );
             return None;
         }
@@ -320,6 +369,25 @@ fn expand_handler(
         return None;
     }
 
+    if let Some((_, span)) = config.die_on_err {
+        if manual_answer {
+            proc_macro_error::emit_error!(
+                span,
+                "`die_on_err` cannot be combined with manual answering \
+                 (#[answer]/#[envelope]) - fail the actor through #[context] instead"
+            );
+            return None;
+        }
+
+        if matches!(signature.output, ReturnType::Default) {
+            proc_macro_error::emit_error!(
+                span,
+                "`die_on_err` requires a handler with a result-like return type"
+            );
+            return None;
+        }
+    }
+
     if let Some(answer_override) = &config.answer {
         if config.message.is_some() {
             proc_macro_error::emit_error!(
@@ -341,7 +409,10 @@ fn expand_handler(
     }
 
     // The answer type of a generated message: inferred from the return type,
-    // or - for manually answering handlers - taken from the `answer` key.
+    // or - for manually answering handlers - taken from the `answer` key. A
+    // `die_on_err = consume` handler answers the Ok part of its result; the
+    // `ResultLike` projection extracts it without syntactically parsing the
+    // return type (which would break on aliases).
     let answer = if manual_answer {
         config
             .answer
@@ -350,7 +421,12 @@ fn expand_handler(
     } else {
         match &signature.output {
             ReturnType::Default => quote!(()),
-            ReturnType::Type(_, ty) => ty.to_token_stream(),
+            ReturnType::Type(_, ty) => match config.die_on_err {
+                Some((DieMode::Consume, _)) => {
+                    quote!(<#ty as ::factories_actor::runtime::result::ResultLike>::Ok)
+                }
+                _ => ty.to_token_stream(),
+            },
         }
     };
 
@@ -424,8 +500,17 @@ fn expand_handler(
         ParamBinding::Answer => quote!(answer),
         ParamBinding::Message => quote!(message),
         ParamBinding::Envelope => quote!(envelope),
+        ParamBinding::Context => quote!(actor_context),
     });
     let call = quote!(guard.#fn_ident(#(#arguments),*)#maybe_await);
+
+    // The actor context borrows the run loop's state, not the handler
+    // context - grabbed before the handler context is decomposed.
+    let context_prologue = if context_param.is_some() || config.die_on_err.is_some() {
+        quote!(let actor_context = ctx.actor_context();)
+    } else {
+        TokenStream::new()
+    };
 
     let body = if envelope_param.is_some() {
         // The envelope stays sealed: the message is never unwrapped, the
@@ -436,6 +521,7 @@ fn expand_handler(
         // conversion cannot fail today: channels verify sendability at the
         // boundary before an envelope ever reaches a handler.
         quote! {
+            #context_prologue
             let (#guard, envelope) = ctx.into_parts_with_envelope();
             let envelope = match ::factories_actor::message::envelope::SendableEnvelope::try_from_envelope(envelope) {
                 ::core::result::Result::Ok(envelope) => envelope,
@@ -454,18 +540,54 @@ fn expand_handler(
 
         if manual_answer {
             quote! {
+                #context_prologue
                 let (#guard, #message_binding, answer) = ctx.into_parts();
                 #destructure
                 #call;
             }
         } else {
+            let complete = match config.die_on_err {
+                // The full result stays the answer; the error is *also*
+                // cloned into the actor's death.
+                Some((DieMode::Forward, _)) => quote! {
+                    let result = #call;
+                    if let ::core::result::Result::Err(error) =
+                        ::factories_actor::runtime::result::ResultLike::as_result(&result)
+                    {
+                        actor_context.fail(::core::convert::Into::into(
+                            ::core::clone::Clone::clone(error),
+                        ));
+                    }
+                    if let Some(answer) = answer {
+                        let _ = answer.send(result);
+                    }
+                },
+                // The death consumes the error; the answer is the Ok part.
+                Some((DieMode::Consume, _)) => quote! {
+                    match ::factories_actor::runtime::result::ResultLike::into_result(#call) {
+                        ::core::result::Result::Ok(value) => {
+                            if let Some(answer) = answer {
+                                let _ = answer.send(value);
+                            }
+                        }
+                        ::core::result::Result::Err(error) => {
+                            actor_context.fail(::core::convert::Into::into(error));
+                        }
+                    }
+                },
+                None => quote! {
+                    let result = #call;
+                    if let Some(answer) = answer {
+                        let _ = answer.send(result);
+                    }
+                },
+            };
+
             quote! {
+                #context_prologue
                 let (#guard, #message_binding, answer) = ctx.into_parts();
                 #destructure
-                let result = #call;
-                if let Some(answer) = answer {
-                    let _ = answer.send(result);
-                }
+                #complete
             }
         }
     };

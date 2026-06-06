@@ -58,9 +58,6 @@ pub fn derive_actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// struct GetValue;
 /// ```
 ///
-/// The generated `unsafe impl Message` is sound by construction: the RTTI and
-/// the implementation are emitted for the same type in one expansion.
-///
 /// Generic messages are rejected: message RTTI is a `static`, which generic
 /// contexts share across all instantiations, breaking per-type identity.
 #[proc_macro_error::proc_macro_error]
@@ -102,10 +99,23 @@ pub fn derive_message(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 /// - `#[message]` - receives the whole message by value instead of
 ///   decomposing it; cannot be combined with field parameters.
 /// - `#[envelope]` - receives the sealed envelope as a `SendableEnvelope`
-///   (the answer sender travels inside), e.g. for forwarding; must be the
-///   only parameter. Sendable rather than raw because `async fn` arguments
-///   are captured into the future's initial state, where a `!Send` envelope
-///   would fail thread-safe dispatch demands.
+///   (the answer sender travels inside), e.g. for forwarding; cannot be
+///   combined with message-derived parameters. Sendable rather than raw
+///   because `async fn` arguments are captured into the future's initial
+///   state, where a `!Send` envelope would fail thread-safe dispatch demands.
+/// - `#[context]` - receives the `ActorContext`: the actor's own runtime
+///   services, e.g. `fail(error)` to kill the actor from the handler body.
+///
+/// Handlers returning a `Result` can additionally make their errors fatal to
+/// the actor via the `die_on_err` key (the error type must convert
+/// `Into<Actor::Error>`):
+///
+/// - `#[handler(die_on_err)]` - the full `Result` stays the answer exactly as
+///   if the key were absent, the error is *also* cloned into the actor's
+///   death (requires `Clone`).
+/// - `#[handler(die_on_err = consume)]` - the death consumes the error: the
+///   answer becomes the Ok part, the asker's answer channel just closes on
+///   error. No `Clone` needed.
 ///
 /// ```ignore
 /// #[factories_actor::messages]

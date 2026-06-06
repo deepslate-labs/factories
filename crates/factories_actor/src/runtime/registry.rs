@@ -565,6 +565,10 @@ mod tests {
         fn lock_strategy(&self) -> &TableActorLock {
             unimplemented!("the table test actor is never driven")
         }
+
+        fn shared_state(&self) -> &crate::actor::state::SharedActorState<TableActor> {
+            unimplemented!("the table test actor is never driven")
+        }
     }
 
     crate::declare_actor_rtti!(TABLE_ACTOR_RTTI, TableActor);

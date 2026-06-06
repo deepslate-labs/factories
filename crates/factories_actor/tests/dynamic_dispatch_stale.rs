@@ -65,6 +65,10 @@ impl ActorRunLoopDispatchContext<StaleActor> for StaleLoopContext {
     fn lock_strategy(&self) -> &StaleLock {
         unimplemented!("the stale test actor is never driven")
     }
+
+    fn shared_state(&self) -> &factories_actor::actor::state::SharedActorState<StaleActor> {
+        unimplemented!("the stale test actor is never driven")
+    }
 }
 
 struct ReadAccess;

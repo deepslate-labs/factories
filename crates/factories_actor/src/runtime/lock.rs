@@ -289,6 +289,10 @@ mod tests {
         fn lock_strategy(&self) -> &UnguardedLock<LockActor> {
             unimplemented!("the lock test actor is never driven")
         }
+
+        fn shared_state(&self) -> &crate::actor::state::SharedActorState<LockActor> {
+            unimplemented!("the lock test actor is never driven")
+        }
     }
 
     crate::declare_actor_rtti!(LOCK_ACTOR_RTTI, LockActor);

@@ -20,17 +20,27 @@ pub struct ConcurrentRunLoop<A: Actor<RunLoop = Self> + ?Sized> {
 }
 
 impl<A: Actor<RunLoop = Self> + ?Sized> ConcurrentRunLoop<A> {
-    pub fn new(lock_strategy: A::LockStrategy) -> Self {
+    pub fn new(lock_strategy: A::LockStrategy, shared: SharedActorState<A>) -> Self {
         Self {
-            dispatch_context: ConcurrentRunLoopDispatchContext { lock_strategy },
+            dispatch_context: ConcurrentRunLoopDispatchContext {
+                lock_strategy,
+                shared,
+            },
         }
     }
 
-    /// Drive the loop until the mailbox closes, then drain pending work.
+    /// Drive the loop until the mailbox closes (then drain pending work) or a
+    /// handler fails the actor (then drop pending work).
     pub async fn run(self, mut mailbox: impl ActorMailbox) {
         let mut work_set = FuturesUnordered::new();
 
         loop {
+            // A handler failed the actor: drop the in-flight work set and
+            // exit without draining - the actor state is compromised.
+            if self.dispatch_context.shared.get_error().is_some() {
+                return;
+            }
+
             let mailbox_recv = async {
                 let msg = mailbox.receive().await?;
 
@@ -70,7 +80,12 @@ impl<A: Actor<RunLoop = Self> + ?Sized> ConcurrentRunLoop<A> {
         }
 
         // Drive pending work to completion before completely shutting down the actor
-        while let Some(_) = work_set.next().await {}
+        while work_set.next().await.is_some() {
+            // Failures also cut the drain short.
+            if self.dispatch_context.shared.get_error().is_some() {
+                return;
+            }
+        }
     }
 }
 
@@ -123,7 +138,7 @@ where
 
             shared.transition_running();
 
-            let this = Self::new(actor.into());
+            let this = Self::new(actor.into(), shared);
             this.run(mailbox).await;
         }
     }
@@ -131,6 +146,7 @@ where
 
 pub struct ConcurrentRunLoopDispatchContext<A: Actor + ?Sized> {
     lock_strategy: A::LockStrategy,
+    shared: SharedActorState<A>,
 }
 
 impl<A: Actor + ?Sized> Debug for ConcurrentRunLoopDispatchContext<A>
@@ -147,5 +163,9 @@ where
 impl<A: Actor + ?Sized> ActorRunLoopDispatchContext<A> for ConcurrentRunLoopDispatchContext<A> {
     fn lock_strategy(&self) -> &A::LockStrategy {
         &self.lock_strategy
+    }
+
+    fn shared_state(&self) -> &SharedActorState<A> {
+        &self.shared
     }
 }

@@ -385,11 +385,16 @@ struct SequentialLoop;
 
 struct SequentialDispatchContext {
     lock: CounterLock,
+    shared: SharedActorState<Counter>,
 }
 
 impl ActorRunLoopDispatchContext<Counter> for SequentialDispatchContext {
     fn lock_strategy(&self) -> &CounterLock {
         &self.lock
+    }
+
+    fn shared_state(&self) -> &SharedActorState<Counter> {
+        &self.shared
     }
 }
 
@@ -398,9 +403,14 @@ impl ActorRunLoop<Counter> for SequentialLoop {
     type Demand = ThreadSafe;
 }
 
-async fn drive_counter(counter: Counter, mut mailbox: impl ActorMailbox + Send) {
+async fn drive_counter(
+    counter: Counter,
+    shared: SharedActorState<Counter>,
+    mut mailbox: impl ActorMailbox + Send,
+) {
     let ctx = SequentialDispatchContext {
         lock: counter.into(),
+        shared,
     };
 
     while let Some(message) = mailbox.receive().await {
@@ -430,7 +440,7 @@ async fn custom_loop_without_assembly_contract() {
     let task = spawner.spawn(async move {
         let _guard = loop_shared.dead_on_drop();
         loop_shared.transition_running();
-        drive_counter(Counter { count: 0 }, mailbox).await;
+        drive_counter(Counter { count: 0 }, loop_shared.clone(), mailbox).await;
     });
     let _ = shared.attach_task(task);
 

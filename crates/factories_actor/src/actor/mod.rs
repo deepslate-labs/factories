@@ -5,7 +5,9 @@ use crate::message::channel::AnswerSender;
 use crate::message::envelope::MessageEnvelope;
 use crate::message::rtti::MessageRtti;
 use channel::ActorChannel;
+use core::fmt::Debug;
 use core::marker::PhantomData;
+use state::SharedActorState;
 
 pub mod channel;
 pub mod dispatch;
@@ -153,6 +155,7 @@ pub const fn demand_check<D: DispatchDemand, F: DemandedFuture<D>>(fut: F) -> F 
 /// Context passed to a message handler of an actor.
 pub struct MessageHandlerContext<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A> + 'a> {
     actor_access: E::Guard<'a>,
+    actor_state: &'a SharedActorState<A>,
     envelope: MessageEnvelope,
     _data: PhantomData<(M, fn() -> A, E)>,
 }
@@ -164,6 +167,7 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
     /// type.
     pub fn new(
         actor_access: E::Guard<'a>,
+        actor_state: &'a SharedActorState<A>,
         envelope: MessageEnvelope,
     ) -> Result<Self, MessageEnvelope> {
         if envelope.rtti() != M::RTTI {
@@ -172,7 +176,7 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
         }
 
         // SAFETY: We checked that M is indeed the payload type of the envelope
-        Ok(unsafe { Self::new_unchecked(actor_access, envelope) })
+        Ok(unsafe { Self::new_unchecked(actor_access, actor_state, envelope) })
     }
 
     /// Create a new message handler context.
@@ -180,12 +184,25 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
     /// # Safety
     /// The caller is responsible for ensuring that the envelope actually carries a message
     /// of type `M`.
-    pub unsafe fn new_unchecked(actor_access: E::Guard<'a>, envelope: MessageEnvelope) -> Self {
+    pub unsafe fn new_unchecked(
+        actor_access: E::Guard<'a>,
+        actor_state: &'a SharedActorState<A>,
+        envelope: MessageEnvelope,
+    ) -> Self {
         Self {
             actor_access,
+            actor_state,
             envelope,
             _data: PhantomData,
         }
+    }
+
+    /// The actor's own runtime services (failing the actor, lifecycle).
+    ///
+    /// The returned value borrows the run loop's state, not this context: it
+    /// can be grabbed first and stays usable after the context is decomposed.
+    pub fn actor_context(&self) -> ActorContext<'a, A> {
+        ActorContext::new(self.actor_state)
     }
 
     /// Access the actor guard.
@@ -217,15 +234,17 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
     }
 }
 
-// SAFETY: The guard's sendability is honestly reflected by the where-clause. The
-//         envelope's sendability is guaranteed by the boundary contracts: channels
-//         that transport deliveries across threads verify `MessageEnvelope::is_sendable`
-//         before doing so, and the runtime binder validates dynamic dispatch. This
-//         mirrors the `unsafe impl Send for DispatchedActorMessage` justification.
+// SAFETY: The guard's and shared state reference's sendability are
+//         reflected by the where-clause. The envelope's sendability is guaranteed
+//         by the boundary contracts: channels that transport deliveries across
+//         threads verify `MessageEnvelope::is_sendable` before doing so, and the
+//         runtime binder validates dynamic dispatch. This mirrors the
+//         `unsafe impl Send for DispatchedActorMessage` justification.
 unsafe impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> Send
     for MessageHandlerContext<'a, M, A, E>
 where
     E::Guard<'a>: Send,
+    SharedActorState<A>: Sync,
 {
 }
 
@@ -324,4 +343,60 @@ pub unsafe trait SerializedDispatch<A: Actor + ?Sized>: ActorRunLoop<A> {}
 pub trait ActorRunLoopDispatchContext<A: Actor + ?Sized> {
     /// The lock strategy used to acquire access to the actor state.
     fn lock_strategy(&self) -> &A::LockStrategy;
+
+    /// The state shared between the run loop and the actor's handles.
+    fn shared_state(&self) -> &SharedActorState<A>;
+}
+
+/// Handle to the actor's own runtime services, available to message handlers
+/// through [`MessageHandlerContext::actor_context`].
+///
+/// This is a reduced surface to the shared actor state, as this is exposed
+/// to message handlers that should not have full access to the internal
+/// shared state.
+pub struct ActorContext<'a, A: Actor + ?Sized> {
+    state: &'a SharedActorState<A>,
+}
+
+impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
+    /// Create a context over the actor's shared state.
+    pub fn new(state: &'a SharedActorState<A>) -> Self {
+        Self { state }
+    }
+
+    /// Fail the actor: record `error` and stop the run loop.
+    ///
+    /// The first error wins, later errors are dropped. The error is recorded
+    /// immediately; the run loop notices at its next turn - typically when
+    /// the failing handler completes - drops in-flight work and exits, which
+    /// transitions the lifecycle to [`Dead`](state::LifecycleState::Dead).
+    /// As on the init path, the error is observable before `Dead` is.
+    pub fn fail(&self, error: A::Error) {
+        let _ = self.state.set_error(error);
+    }
+
+    /// The current lifecycle state of the actor.
+    pub fn lifecycle(&self) -> state::LifecycleState {
+        self.state.lifecycle()
+    }
+}
+
+// Manual impls: the derives would spuriously require `A: Copy/Clone`.
+impl<A: Actor + ?Sized> Copy for ActorContext<'_, A> {}
+
+impl<A: Actor + ?Sized> Clone for ActorContext<'_, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<A: Actor + ?Sized> Debug for ActorContext<'_, A>
+where
+    A::Error: Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ActorContext")
+            .field("state", &self.state)
+            .finish()
+    }
 }

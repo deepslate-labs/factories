@@ -103,7 +103,6 @@ impl LifecycleCell {
     }
 }
 
-#[derive(Debug)]
 struct InnerSharedActorState<A: Actor + ?Sized> {
     error: OnceCell<A::Error>,
     lifecycle: LifecycleCell,
@@ -120,6 +119,19 @@ impl<A: Actor + ?Sized> InnerSharedActorState<A> {
             lifecycle: LifecycleCell::new(),
             task: OnceCell::new(),
         }
+    }
+}
+
+impl<A: Actor + ?Sized> Debug for InnerSharedActorState<A>
+where
+    A::Error: Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InnerSharedActorState")
+            .field("error", &self.error)
+            .field("lifecycle", &self.lifecycle)
+            .field("task", &self.task)
+            .finish()
     }
 }
 
