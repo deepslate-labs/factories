@@ -5,10 +5,11 @@ use syn::{DeriveInput, LitStr, Type};
 use crate::util;
 
 /// Parsed `#[actor(...)]` configuration; one slot per associated type plus the
-/// RTTI name override. Multiple `#[actor(...)]` attributes merge, duplicate
-/// keys are rejected.
+/// RTTI name override and the component template. Multiple `#[actor(...)]`
+/// attributes merge, duplicate keys are rejected.
 #[derive(Default)]
 struct ActorConfig {
+    template: Option<Type>,
     channel: Option<Type>,
     error: Option<Type>,
     binder: Option<Type>,
@@ -30,7 +31,9 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
         // the remaining attributes are still checked so all diagnostics
         // surface in one compiler pass.
         let result = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("channel") {
+            if meta.path.is_ident("template") {
+                util::set_value(&mut config.template, &meta)
+            } else if meta.path.is_ident("channel") {
                 util::set_value(&mut config.channel, &meta)
             } else if meta.path.is_ident("error") {
                 util::set_value(&mut config.error, &meta)
@@ -45,7 +48,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
             } else {
                 Err(meta.error(
                     "unknown key, expected one of \
-                     `channel`, `error`, `binder`, `lock`, `run_loop`, `name`",
+                     `template`, `channel`, `error`, `binder`, `lock`, `run_loop`, `name`",
                 ))
             }
         });
@@ -56,13 +59,39 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     }
 
     let ident = &input.ident;
-    let defaults = quote!(::factories_actor::runtime::defaults);
 
-    let channel = util::value_or_default(config.channel, quote!(#defaults::DefaultChannel));
-    let error = util::value_or_default(config.error, quote!(#defaults::DefaultError));
-    let binder = util::value_or_default(config.binder, quote!(#defaults::DefaultRuntimeBinder<Self>));
-    let lock = util::value_or_default(config.lock, quote!(#defaults::DefaultLockStrategy<Self>));
-    let run_loop = util::value_or_default(config.run_loop, quote!(#defaults::DefaultRunLoop<Self>));
+    // Per-key precedence: explicit key > template member > built-in default.
+    // Defaults and template members are resolved as paths (not decided here)
+    // because this proc macro cannot see which features of `factories_actor`
+    // are enabled - the feature-gated aliases respectively the template impl
+    // can.
+    let defaults = quote!(::factories_actor::runtime::defaults);
+    let (channel_default, error_default, binder_default, lock_default, run_loop_default) =
+        match &config.template {
+            Some(template) => {
+                let template = quote!(<#template as ::factories_actor::runtime::template::ActorTemplate>);
+                (
+                    quote!(#template::Channel),
+                    quote!(#template::Error),
+                    quote!(#template::RuntimeBinder<Self>),
+                    quote!(#template::LockStrategy<Self>),
+                    quote!(#template::RunLoop<Self>),
+                )
+            }
+            None => (
+                quote!(#defaults::DefaultChannel),
+                quote!(#defaults::DefaultError),
+                quote!(#defaults::DefaultRuntimeBinder<Self>),
+                quote!(#defaults::DefaultLockStrategy<Self>),
+                quote!(#defaults::DefaultRunLoop<Self>),
+            ),
+        };
+
+    let channel = util::value_or_default(config.channel, channel_default);
+    let error = util::value_or_default(config.error, error_default);
+    let binder = util::value_or_default(config.binder, binder_default);
+    let lock = util::value_or_default(config.lock, lock_default);
+    let run_loop = util::value_or_default(config.run_loop, run_loop_default);
     let rtti_name = util::rtti_name(config.name, ident);
 
     // The `unsafe impl` is sound by construction: the RTTI and the impl are

@@ -15,6 +15,7 @@ pub mod lock;
 pub mod result;
 pub mod routing;
 pub mod sequential_loop;
+pub mod template;
 
 /// Register a dynamically dispatched message handler *if* the
 /// `dynamic-dispatch` feature is enabled; expands to nothing otherwise.

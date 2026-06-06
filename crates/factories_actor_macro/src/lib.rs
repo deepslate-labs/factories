@@ -24,7 +24,9 @@ mod util;
 /// | `run_loop` | `RunLoop`       | `DefaultRunLoop<Self>`     |
 ///
 /// Additionally `name = "..."` overrides the debug name baked into the RTTI
-/// (defaults to the stringified type name).
+/// (defaults to the stringified type name), and `template = SomeTemplate`
+/// pulls omitted keys from an `ActorTemplate` impl instead of the built-in
+/// defaults (explicit keys still override individual template members).
 ///
 /// ```ignore
 /// #[derive(Actor)]

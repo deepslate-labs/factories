@@ -15,7 +15,7 @@ use futures::stream::FuturesUnordered;
 ///
 /// The loop demands [`ThreadSafe`] handler futures: its task may migrate
 /// between executor threads.
-pub struct ConcurrentRunLoop<A: Actor<RunLoop = Self> + ?Sized> {
+pub struct ConcurrentRunLoop<A: Actor + ?Sized> {
     dispatch_context: ConcurrentRunLoopDispatchContext<A>,
 }
 

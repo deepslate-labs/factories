@@ -15,7 +15,7 @@ use core::fmt::{Debug, Formatter};
 ///
 /// The loop demands [`ThreadSafe`] handler futures: its task may migrate
 /// between executor threads. Dispatches still never overlap.
-pub struct SequentialRunLoop<A: Actor<RunLoop = Self> + ?Sized> {
+pub struct SequentialRunLoop<A: Actor + ?Sized> {
     dispatch_context: SequentialRunLoopDispatchContext<A>,
 }
 
