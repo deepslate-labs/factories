@@ -455,13 +455,14 @@ mod tests {
         ActorChannel, ActorChannelSendResult, ActorChannelSendable,
     };
     use crate::actor::dispatch::{
-        BoxedAcquireFuture, DispatchContextPtr, DispatchedActorMessage,
+        BoxedAcquireFuture, BoxedHandlerFuture, DispatchContextPtr, DispatchedActorMessage,
         DispatchedActorMessageContext,
     };
     use crate::actor::{
         ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy, StaticOnlyBinder, ThreadLocal,
     };
-    use alloc::format;
+    use crate::message::envelope::MessageEnvelope;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     struct UniqueMsg;
     crate::declare_message!(UniqueMsg, ());
@@ -478,36 +479,48 @@ mod tests {
     struct WriteOnceMsg;
     crate::declare_message!(WriteOnceMsg, ());
 
-    unsafe fn dispatch_a(
-        _: DispatchContextPtr,
+    static DISPATCH_A_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static DISPATCH_B_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe fn dispatch_a<'ctx>(
+        _: DispatchContextPtr<'ctx>,
         _: DispatchedActorMessageContext,
-    ) -> BoxedAcquireFuture {
-        unreachable!("dispatcher A must not be invoked")
+    ) -> BoxedAcquireFuture<'ctx> {
+        DISPATCH_A_CALLS.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async {
+            let handler: BoxedHandlerFuture<'ctx> = Box::pin(async {});
+            handler
+        })
     }
 
-    unsafe fn dispatch_b(
-        _: DispatchContextPtr,
+    unsafe fn dispatch_b<'ctx>(
+        _: DispatchContextPtr<'ctx>,
         _: DispatchedActorMessageContext,
-    ) -> BoxedAcquireFuture {
-        unreachable!("dispatcher B must not be invoked")
+    ) -> BoxedAcquireFuture<'ctx> {
+        DISPATCH_B_CALLS.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async {
+            let handler: BoxedHandlerFuture<'ctx> = Box::pin(async {});
+            handler
+        })
     }
 
-    /// Compare dispatchers by their debug representation (the handler pointer).
-    fn dispatcher_eq(a: &ActorMessageDispatcher, b: &ActorMessageDispatcher) -> bool {
-        format!("{a:?}") == format!("{b:?}")
+    /// Invoke a bound dispatcher the way a run loop would.
+    fn invoke<M: Message>(dispatcher: ActorMessageDispatcher, message: M) {
+        let context = TableActorLoopContext;
+        let message_context =
+            DispatchedActorMessageContext::of(MessageEnvelope::new(message, None));
+
+        // SAFETY: The context is the table actor's real dispatch context type,
+        //         the envelope carries the message type the dispatcher was
+        //         bound for in the test table, and we stay on this thread.
+        let acquire =
+            unsafe { dispatcher.invoke(DispatchContextPtr::new(&context), message_context) };
+
+        drop(acquire);
     }
 
     const fn id(value: usize) -> NonZeroUsize {
         NonZeroUsize::new(value).expect("test IDs are non-zero")
-    }
-
-    fn test_table() -> ActorDispatchTable {
-        ActorDispatchTable {
-            actor: TABLE_ACTOR_RTTI,
-            unique_base: id(10),
-            unique: Box::new([ActorMessageDispatcher::new(dispatch_a)]),
-            shared: Box::new([(id(12), ActorMessageDispatcher::new(dispatch_b))]),
-        }
     }
 
     // Minimal actor whose RTTI fills the table's actor field. It is never
@@ -591,23 +604,26 @@ mod tests {
             let _ = <ForeignMsg as Message>::RTTI.assign_dynamic_dispatch_id(id(100));
         }
 
-        let table = test_table();
+        let table = ActorDispatchTable {
+            actor: TABLE_ACTOR_RTTI,
+            unique_base: id(10),
+            unique: Box::new([ActorMessageDispatcher::new(dispatch_a)]),
+            shared: Box::new([(id(12), ActorMessageDispatcher::new(dispatch_b))]),
+        };
 
         let unique = table
             .bind(<UniqueMsg as Message>::RTTI)
             .expect("unique message must bind");
-        assert!(dispatcher_eq(
-            &unique,
-            &ActorMessageDispatcher::new(dispatch_a)
-        ));
+        invoke(unique, UniqueMsg);
+        assert_eq!(DISPATCH_A_CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(DISPATCH_B_CALLS.load(Ordering::Relaxed), 0);
 
         let shared = table
             .bind(<SharedMsg as Message>::RTTI)
             .expect("shared message must bind");
-        assert!(dispatcher_eq(
-            &shared,
-            &ActorMessageDispatcher::new(dispatch_b)
-        ));
+        invoke(shared, SharedMsg);
+        assert_eq!(DISPATCH_A_CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(DISPATCH_B_CALLS.load(Ordering::Relaxed), 1);
 
         // Assigned ID, but not in this actor's table.
         assert!(table.bind(<ForeignMsg as Message>::RTTI).is_none());
