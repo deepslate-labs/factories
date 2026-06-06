@@ -25,6 +25,9 @@ tracing = ["dep:tracing"]
 # link-section constructors (factories_collect).
 dynamic-dispatch = ["dep:factories_collect"]
 
+# `#[derive(Actor)]` and friends.
+derive = ["dep:factories_actor_macro"]
+
 [dependencies]
 kanal = { workspace = true, optional = true, default-features = false }
 tokio = { workspace = true, optional = true, default-features = false }
@@ -36,6 +39,7 @@ once_cell = { workspace = true, features = ["critical-section"] }
 paste = { workspace = true }
 factories_rtti = { workspace = true }
 factories_collect = { workspace = true, optional = true }
+factories_actor_macro = { workspace = true, optional = true }
 seq-macro = { workspace = true }
 typed-builder = { workspace = true }
 

@@ -1,0 +1,70 @@
+//! Default component selections for derived actors.
+//!
+//! `#[derive(Actor)]` fills every associated type that is not explicitly
+//! configured in `#[actor(...)]` with an alias from this module. The
+//! indirection is what makes feature-dependent defaults possible in the first
+//! place: the derive macro is compiled separately and cannot see which
+//! features of *this* crate are enabled, so it unconditionally emits paths
+//! into this module and lets `cfg` resolve them here.
+//!
+//! Two consequences worth knowing:
+//!
+//! - The defaults are ordinary, nameable type aliases. Writing
+//!   `type Channel = defaults::DefaultChannel;` by hand is exactly equivalent
+//!   to letting the derive fill it in - the macro adds no capability.
+//! - A default whose backing feature is disabled simply does not exist, and
+//!   the derive output fails with "cannot find type `Default...`" pointing at
+//!   this module. Enable the feature listed on the alias or configure the
+//!   component explicitly.
+
+/// Default channel:
+/// [`SimpleKanalActorChannel`](crate::runtime::kanal::SimpleKanalActorChannel).
+///
+/// Requires the `kanal-runtime` feature.
+#[cfg(feature = "kanal-runtime")]
+pub type DefaultChannel = crate::runtime::kanal::SimpleKanalActorChannel;
+
+/// Default actor error type: actors that don't configure one cannot fail.
+pub type DefaultError = core::convert::Infallible;
+
+/// Default runtime binder with the `dynamic-dispatch` feature enabled: the
+/// global handler registry. Messages registered via
+/// [`register_dynamic_handler!`](crate::register_dynamic_handler) bind
+/// dynamically.
+#[cfg(feature = "dynamic-dispatch")]
+pub type DefaultRuntimeBinder<A> = crate::runtime::registry::RegistryBinder<A>;
+
+/// Default runtime binder without the `dynamic-dispatch` feature: dynamic
+/// sends never bind, only static dispatch is available.
+#[cfg(not(feature = "dynamic-dispatch"))]
+pub type DefaultRuntimeBinder<A> = <A as static_only::Select>::Binder;
+
+// We need the `DefaultRuntimeBinder` to have the same generic arity regardless
+// of the enabled features. To facilitate this, we have to slightly
+// hack around here.
+//
+// Use the trait to completely ignore the generic parameter and then select a
+// non generic type.
+#[cfg(not(feature = "dynamic-dispatch"))]
+mod static_only {
+    pub trait Select {
+        type Binder;
+    }
+
+    impl<A: ?Sized> Select for A {
+        type Binder = crate::actor::StaticOnlyBinder;
+    }
+}
+
+/// Default lock strategy:
+/// [`TokioMutexLock`](crate::runtime::tokio::TokioMutexLock), exclusive access
+/// only.
+///
+/// Requires the `tokio-lock` feature.
+#[cfg(feature = "tokio-lock")]
+pub type DefaultLockStrategy<A> = crate::runtime::tokio::TokioMutexLock<A>;
+
+/// Default run loop:
+/// [`ConcurrentRunLoop`](crate::runtime::concurrent_loop::ConcurrentRunLoop)
+/// (dependency-free, always available).
+pub type DefaultRunLoop<A> = crate::runtime::concurrent_loop::ConcurrentRunLoop<A>;

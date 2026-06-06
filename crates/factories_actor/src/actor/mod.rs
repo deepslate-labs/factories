@@ -15,6 +15,12 @@ pub mod rtti;
 pub mod state;
 pub mod task;
 
+/// Derive macro generating an [`Actor`] implementation together with its RTTI
+/// declaration. Configured via `#[actor(...)]`; omitted components fall back
+/// to [`runtime::defaults`](crate::runtime::defaults).
+#[cfg(feature = "derive")]
+pub use factories_actor_macro::Actor;
+
 /// The heart of the actor system. Defines a struct as being an actor.
 pub unsafe trait Actor: 'static {
     const RTTI: &'static ActorRtti;

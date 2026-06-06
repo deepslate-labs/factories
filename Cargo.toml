@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/factories_actor","crates/factories_collect", "crates/factories_rtti", "crates/factories_types_macro"]
+members = ["crates/factories_actor", "crates/factories_actor_macro", "crates/factories_collect", "crates/factories_rtti", "crates/factories_types_macro"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -31,6 +31,7 @@ thiserror = { version = "2.0.18", default-features = false }
 
 # Own crates
 factories_actor = { path = "crates/factories_actor" }
+factories_actor_macro = { path = "crates/factories_actor_macro" }
 factories_collect = { path = "crates/factories_collect" }
 factories_mem = { path = "crates/factories_mem" }
 factories_rtti = { path = "crates/factories_rtti" }

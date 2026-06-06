@@ -93,9 +93,15 @@ impl ChannelRtti {
 }
 
 /// Declare an actor RTTI.
+///
+/// The optional third argument overrides the debug name baked into the RTTI
+/// (defaults to the stringified type).
 #[macro_export]
 macro_rules! declare_actor_rtti {
     ($name:ident, $type:ty) => {
+        $crate::declare_actor_rtti!($name, $type, ::core::stringify!($type));
+    };
+    ($name:ident, $type:ty, $actor_name:expr) => {
         pub const $name: &'static $crate::actor::rtti::ActorRtti = const {
             const CHANNEL_RTTI: $crate::actor::rtti::ChannelRtti =
                 $crate::actor::rtti::ChannelRtti::new($crate::factories_rtti::create_send_sync_rtti!(
@@ -107,7 +113,7 @@ macro_rules! declare_actor_rtti {
 
             static VALUE: $crate::actor::rtti::ActorRtti = unsafe {
                 $crate::actor::rtti::ActorRtti::new_named::<$type>(
-                    stringify!($type),
+                    $actor_name,
                     CHANNEL_RTTI,
                     ERROR_RTTI,
                 )

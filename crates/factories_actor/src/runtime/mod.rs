@@ -10,6 +10,7 @@ pub mod tokio;
 pub mod registry;
 
 pub mod concurrent_loop;
+pub mod defaults;
 pub mod lock;
 pub mod routing;
 pub mod sequential_loop;
