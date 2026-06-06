@@ -2,6 +2,10 @@
 
 extern crate alloc;
 
+// Tests run on std targets (panic unwinding, catch_unwind).
+#[cfg(test)]
+extern crate std;
+
 pub mod message;
 pub mod actor;
 pub mod runtime;

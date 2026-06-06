@@ -12,3 +12,4 @@ pub mod registry;
 pub mod concurrent_loop;
 pub mod lock;
 pub mod routing;
+pub mod sequential_loop;

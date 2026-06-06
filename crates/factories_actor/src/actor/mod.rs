@@ -293,6 +293,24 @@ pub trait ActorRunLoop<A: Actor + ?Sized> {
     type Demand: DispatchDemand;
 }
 
+/// Marker contract for run loops that never overlap dispatches.
+///
+/// This is the counterpart of [`DispatchDemand`]: a demand is what the loop
+/// *requires* of handler futures, this marker is what the loop *guarantees* to
+/// the locking machinery. Lock strategies that elide synchronization (e.g.
+/// [`UnguardedLock`](crate::runtime::lock::UnguardedLock)) bound on it so that
+/// pairing them with an overlapping loop is a compile error.
+///
+/// # Safety
+/// The implementor guarantees that dispatches of an actor instance driven by
+/// this loop never overlap: from the first poll of the acquire future returned
+/// by a dispatcher until the resolved handler future completes or is dropped,
+/// no other acquire or handler future of the same actor instance is polled.
+/// This must hold even across threads (the loop task may migrate, but
+/// dispatches stay strictly one-after-another). Consumers may rely on this
+/// guarantee for soundness.
+pub unsafe trait SerializedDispatch<A: Actor + ?Sized>: ActorRunLoop<A> {}
+
 /// The dispatch-side view of an actor's run loop.
 ///
 /// A reference to this type is what the dispatcher casts the opaque

@@ -14,6 +14,8 @@ use factories_actor::actor::{
 };
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
 use factories_actor::runtime::kanal::SimpleKanalActorChannel;
+use factories_actor::runtime::lock::{self, UnguardedLock};
+use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::{
     ActorBuilder, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
@@ -464,4 +466,66 @@ async fn lifecycle_dead_after_handle_dropped() {
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
+}
+
+// -- Framework sequential set: SequentialRunLoop + UnguardedLock ----------------
+//
+// The lock-elision counterpart of the hand-rolled SequentialLoop above: the
+// framework loop guarantees serialized dispatch (SerializedDispatch), so the
+// actor state needs no real lock.
+
+struct Tally {
+    total: u32,
+}
+
+declare_actor_rtti!(TALLY_RTTI, Tally);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Tally {
+    const RTTI: &'static ActorRtti = TALLY_RTTI;
+
+    type Channel = SimpleKanalActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Tally>;
+    type RunLoop = SequentialRunLoop<Tally>;
+}
+
+#[derive(Debug)]
+struct Bump(u32);
+declare_message!(Bump, u32);
+
+impl MessageHandler<Bump> for Tally {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Tally, Bump> = declare_static_dispatcher!(Tally, Bump);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, Bump, Self, lock::Exclusive>,
+    ) -> impl Future<Output = ()> + 'a {
+        async move {
+            let (mut guard, message, answer) = ctx.into_parts();
+            guard.total += message.0;
+            if let Some(answer) = answer {
+                let _ = answer.send(guard.total);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn sequential_loop_with_unguarded_lock() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorBuilder::<Tally>::builder()
+        .build()
+        .spawn_ready(
+            &spawner,
+            factories_actor::actor::IdentityActorInit::new(Tally { total: 0 }).init(),
+        )
+        .await
+        .expect("tally init is infallible");
+
+    assert_eq!(handle.ask(Bump(2)).exchange().await.expect("ask"), 2);
+    assert_eq!(handle.ask(Bump(3)).exchange().await.expect("ask"), 5);
 }
