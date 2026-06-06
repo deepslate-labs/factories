@@ -91,6 +91,22 @@ pub fn derive_message(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 ///   `dynamic-dispatch` feature of `factories_actor` is disabled, mirroring
 ///   the default runtime binder).
 ///
+/// Parameter markers re-route dispatch machinery into a parameter instead of
+/// treating it as a message field. The macro never inspects parameter types -
+/// the generated method call checks them:
+///
+/// - `#[answer]` - receives the answer sender (`Option<AnswerSender<M>>`) for
+///   deferred answering. Disables the automatic answer, so a return type is
+///   an error; for generated messages declare the answer type via
+///   `#[handler(answer = T)]`.
+/// - `#[message]` - receives the whole message by value instead of
+///   decomposing it; cannot be combined with field parameters.
+/// - `#[envelope]` - receives the sealed envelope as a `SendableEnvelope`
+///   (the answer sender travels inside), e.g. for forwarding; must be the
+///   only parameter. Sendable rather than raw because `async fn` arguments
+///   are captured into the future's initial state, where a `!Send` envelope
+///   would fail thread-safe dispatch demands.
+///
 /// ```ignore
 /// #[factories_actor::messages]
 /// impl Calc {
@@ -101,6 +117,16 @@ pub fn derive_message(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 ///
 ///     #[handler(message = SetConfig)]
 ///     fn set_config(&mut self, name: String, value: u32) { /* ... */ }
+///
+///     #[handler(answer = u32)]
+///     fn fetch(&mut self, key: String, #[answer] reply: Option<AnswerSender<Fetch>>) {
+///         /* stash `reply`, answer later */
+///     }
+///
+///     #[handler(message = Transfer)]
+///     async fn route(&mut self, #[envelope] envelope: MessageEnvelope) {
+///         /* forward sealed */
+///     }
 /// }
 /// ```
 #[proc_macro_error::proc_macro_error]

@@ -211,7 +211,7 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
         (self.actor_access, message, answer_sender)
     }
 
-    /// Decompose the context intot he actor guard and the message envelope.
+    /// Decompose the context into the actor guard and the message envelope.
     pub fn into_parts_with_envelope(self) -> (E::Guard<'a>, MessageEnvelope) {
         (self.actor_access, self.envelope)
     }

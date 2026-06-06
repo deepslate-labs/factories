@@ -1,4 +1,4 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::spanned::Spanned;
 use syn::{Attribute, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Pat, ReturnType, Type};
@@ -10,14 +10,29 @@ use crate::util;
 struct HandlerConfig {
     /// Existing message type to decompose instead of generating a new one.
     message: Option<Type>,
+    /// Answer type of a generated message whose handler answers manually -
+    /// there is no return type to infer it from.
+    answer: Option<Type>,
 }
 
-/// One handler parameter: a message field (generated message) or the name of
-/// a field to decompose out of an existing message.
-struct HandlerParam {
-    ident: Ident,
-    ty: Type,
+/// What a handler parameter receives.
+///
+/// Markers re-route dispatch machinery into the parameter; the macro never
+/// inspects the parameter's *type* - the generated method call checks it.
+enum ParamBinding {
+    /// Plain parameter: a message field (generated message) or the name of a
+    /// field to decompose out of an existing message.
+    Field(Ident, Type),
+    /// `#[answer]`: the answer sender (`Option<AnswerSender<M>>`).
+    Answer,
+    /// `#[message]`: the whole message by value.
+    Message,
+    /// `#[envelope]`: the sealed message envelope, e.g. for forwarding.
+    Envelope,
 }
+
+/// Parameter markers known to the macro; stripped from the re-emitted method.
+const PARAM_MARKERS: &[&str] = &["answer", "message", "envelope"];
 
 pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     if !attrs.is_empty() {
@@ -44,6 +59,20 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
 
                 if !markers.is_empty() {
                     handlers.push((function.clone(), markers));
+
+                    // The parameter markers belong to the macro - strip them
+                    // from the re-emitted method too (rustc rejects unknown
+                    // parameter attributes). The clone above keeps them for
+                    // analysis.
+                    for argument in &mut function.sig.inputs {
+                        if let FnArg::Typed(argument) = argument {
+                            argument.attrs.retain(|attr| {
+                                !PARAM_MARKERS
+                                    .iter()
+                                    .any(|marker| attr.path().is_ident(marker))
+                            });
+                        }
+                    }
                 }
             }
             ImplItem::Const(item) => reject_misplaced_markers(&item.attrs),
@@ -115,8 +144,10 @@ fn expand_handler(
         let result = attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("message") {
                 util::set_value(&mut config.message, &meta)
+            } else if meta.path.is_ident("answer") {
+                util::set_value(&mut config.answer, &meta)
             } else {
-                Err(meta.error("unknown key, expected `message`"))
+                Err(meta.error("unknown key, expected one of `message`, `answer`"))
             }
         });
 
@@ -163,45 +194,167 @@ fn expand_handler(
 
     let exclusive = receiver.mutability.is_some();
 
-    // Parameters become message fields (or select the fields to decompose out
-    // of an existing message), so they must be plain identifiers.
-    let mut params = Vec::new();
+    // Plain parameters become message fields (or select the fields to
+    // decompose out of an existing message), so they must be plain
+    // identifiers. Marked parameters receive a binding by position, their
+    // patterns and types are entirely the method's business.
+    let mut bindings = Vec::new();
+    let mut answer_param: Option<Span> = None;
+    let mut message_param: Option<Span> = None;
+    let mut envelope_param: Option<Span> = None;
+
     for argument in signature.inputs.iter().skip(1) {
         let FnArg::Typed(argument) = argument else {
             continue;
         };
 
-        if let Some(attr) = argument.attrs.first() {
+        let mut marker: Option<Span> = None;
+        let mut binding = None;
+        for attr in &argument.attrs {
+            let marked = if attr.path().is_ident("answer") {
+                ParamBinding::Answer
+            } else if attr.path().is_ident("message") {
+                ParamBinding::Message
+            } else if attr.path().is_ident("envelope") {
+                ParamBinding::Envelope
+            } else {
+                proc_macro_error::emit_error!(
+                    attr.span(),
+                    "unknown parameter attribute, expected one of \
+                     `#[answer]`, `#[message]`, `#[envelope]`"
+                );
+                return None;
+            };
+
+            if !matches!(attr.meta, Meta::Path(_)) {
+                proc_macro_error::emit_error!(attr.span(), "parameter markers take no arguments");
+                return None;
+            }
+
+            if marker.is_some() {
+                proc_macro_error::emit_error!(attr.span(), "only one marker per parameter");
+                return None;
+            }
+
+            marker = Some(attr.span());
+            binding = Some(marked);
+        }
+
+        match binding {
+            Some(binding) => {
+                let span = marker.expect("marker span recorded with the binding");
+                let (slot, name) = match &binding {
+                    ParamBinding::Answer => (&mut answer_param, "#[answer]"),
+                    ParamBinding::Message => (&mut message_param, "#[message]"),
+                    ParamBinding::Envelope => (&mut envelope_param, "#[envelope]"),
+                    ParamBinding::Field(..) => unreachable!("markers never produce fields"),
+                };
+
+                if slot.is_some() {
+                    proc_macro_error::emit_error!(span, "duplicate `{}` parameter", name);
+                    return None;
+                }
+
+                *slot = Some(span);
+                bindings.push(binding);
+            }
+            None => {
+                let pattern = match argument.pat.as_ref() {
+                    Pat::Ident(pattern) if pattern.subpat.is_none() => pattern,
+                    other => {
+                        proc_macro_error::emit_error!(
+                            other.span(),
+                            "handler parameters must be plain identifiers"
+                        );
+                        return None;
+                    }
+                };
+
+                bindings.push(ParamBinding::Field(
+                    pattern.ident.clone(),
+                    (*argument.ty).clone(),
+                ));
+            }
+        }
+    }
+
+    let fields: Vec<(&Ident, &Type)> = bindings
+        .iter()
+        .filter_map(|binding| match binding {
+            ParamBinding::Field(ident, ty) => Some((ident, ty)),
+            _ => None,
+        })
+        .collect();
+
+    // A handler that takes the answer sender (directly, or sealed inside the
+    // envelope) answers manually - the automatic answer is disabled.
+    let manual_answer = answer_param.is_some() || envelope_param.is_some();
+
+    if let Some(span) = envelope_param {
+        if bindings.len() > 1 {
             proc_macro_error::emit_error!(
-                attr.span(),
-                "parameter attributes are not supported (yet)"
+                span,
+                "#[envelope] receives the sealed envelope, it cannot be combined with \
+                 other parameters"
+            );
+            return None;
+        }
+    }
+
+    if let Some(span) = message_param {
+        if !fields.is_empty() {
+            proc_macro_error::emit_error!(
+                span,
+                "#[message] receives the whole message, it cannot be combined with \
+                 decomposed field parameters"
+            );
+            return None;
+        }
+    }
+
+    if manual_answer && !matches!(signature.output, ReturnType::Default) {
+        proc_macro_error::emit_error!(
+            signature.output.span(),
+            "this handler answers manually (#[answer]/#[envelope]), remove the return type"
+        );
+        return None;
+    }
+
+    if let Some(answer_override) = &config.answer {
+        if config.message.is_some() {
+            proc_macro_error::emit_error!(
+                answer_override.span(),
+                "`answer` cannot be combined with `message = ...`, the existing message \
+                 fixes its own answer type"
             );
             return None;
         }
 
-        let pattern = match argument.pat.as_ref() {
-            Pat::Ident(pattern) if pattern.subpat.is_none() => pattern,
-            other => {
-                proc_macro_error::emit_error!(
-                    other.span(),
-                    "handler parameters must be plain identifiers"
-                );
-                return None;
-            }
-        };
-
-        params.push(HandlerParam {
-            ident: pattern.ident.clone(),
-            ty: (*argument.ty).clone(),
-        });
+        if !manual_answer {
+            proc_macro_error::emit_error!(
+                answer_override.span(),
+                "`answer` requires a manually answering handler \
+                 (a parameter marked #[answer] or #[envelope])"
+            );
+            return None;
+        }
     }
 
-    let answer = match &signature.output {
-        ReturnType::Default => quote!(()),
-        ReturnType::Type(_, ty) => ty.to_token_stream(),
+    // The answer type of a generated message: inferred from the return type,
+    // or - for manually answering handlers - taken from the `answer` key.
+    let answer = if manual_answer {
+        config
+            .answer
+            .as_ref()
+            .map_or_else(|| quote!(()), ToTokens::to_token_stream)
+    } else {
+        match &signature.output {
+            ReturnType::Default => quote!(()),
+            ReturnType::Type(_, ty) => ty.to_token_stream(),
+        }
     };
 
-    let param_idents: Vec<&Ident> = params.iter().map(|param| &param.ident).collect();
+    let field_idents: Vec<&Ident> = fields.iter().map(|(ident, _)| *ident).collect();
 
     let (message_ty, message_decl, destructure) = match &config.message {
         Some(existing) => {
@@ -213,10 +366,10 @@ fn expand_handler(
                 return None;
             };
 
-            let destructure = if params.is_empty() {
+            let destructure = if field_idents.is_empty() {
                 TokenStream::new()
             } else {
-                quote! { let #path { #(#param_idents,)* .. } = message; }
+                quote! { let #path { #(#field_idents,)* .. } = message; }
             };
 
             (existing.to_token_stream(), TokenStream::new(), destructure)
@@ -225,22 +378,23 @@ fn expand_handler(
             let message_ident = message_type_name(&signature.ident)?;
             let vis = &function.vis;
 
-            let declaration = if params.is_empty() {
+            let declaration = if fields.is_empty() {
                 quote! { #vis struct #message_ident; }
             } else {
-                let fields = params
+                let struct_fields = fields
                     .iter()
-                    .map(|HandlerParam { ident, ty }| quote!(pub #ident: #ty));
-                quote! { #vis struct #message_ident { #(#fields,)* } }
+                    .map(|(ident, ty)| quote!(pub #ident: #ty));
+                quote! { #vis struct #message_ident { #(#struct_fields,)* } }
             };
 
             let rtti_name = quote!(::core::stringify!(#message_ident));
-            let message_impl = crate::message::implement_message(&message_ident, &answer, &rtti_name);
+            let message_impl =
+                crate::message::implement_message(&message_ident, &answer, &rtti_name);
 
-            let destructure = if params.is_empty() {
+            let destructure = if field_idents.is_empty() {
                 TokenStream::new()
             } else {
-                quote! { let #message_ident { #(#param_idents),* } = message; }
+                quote! { let #message_ident { #(#field_idents),* } = message; }
             };
 
             (
@@ -262,13 +416,59 @@ fn expand_handler(
     } else {
         quote!(guard)
     };
-    let message_binding = if destructure.is_empty() {
-        quote!(_)
-    } else {
-        quote!(message)
-    };
+
     let fn_ident = &signature.ident;
     let maybe_await = signature.asyncness.map(|_| quote!(.await));
+    let arguments = bindings.iter().map(|binding| match binding {
+        ParamBinding::Field(ident, _) => ident.to_token_stream(),
+        ParamBinding::Answer => quote!(answer),
+        ParamBinding::Message => quote!(message),
+        ParamBinding::Envelope => quote!(envelope),
+    });
+    let call = quote!(guard.#fn_ident(#(#arguments),*)#maybe_await);
+
+    let body = if envelope_param.is_some() {
+        // The envelope stays sealed: the message is never unwrapped, the
+        // answer sender travels inside. It is passed as a `SendableEnvelope`
+        // because `async fn` arguments are captured into the future's initial
+        // state - a raw (`!Send`) envelope argument would fail thread-safe
+        // dispatch demands even if consumed before the first await. The
+        // conversion cannot fail today: channels verify sendability at the
+        // boundary before an envelope ever reaches a handler.
+        quote! {
+            let (#guard, envelope) = ctx.into_parts_with_envelope();
+            let envelope = match ::factories_actor::message::envelope::SendableEnvelope::try_from_envelope(envelope) {
+                ::core::result::Result::Ok(envelope) => envelope,
+                ::core::result::Result::Err(_) => ::core::unreachable!(
+                    "#[envelope] handlers receive a SendableEnvelope, but the dispatched envelope is not sendable"
+                ),
+            };
+            #call;
+        }
+    } else {
+        let message_binding = if destructure.is_empty() && message_param.is_none() {
+            quote!(_)
+        } else {
+            quote!(message)
+        };
+
+        if manual_answer {
+            quote! {
+                let (#guard, #message_binding, answer) = ctx.into_parts();
+                #destructure
+                #call;
+            }
+        } else {
+            quote! {
+                let (#guard, #message_binding, answer) = ctx.into_parts();
+                #destructure
+                let result = #call;
+                if let Some(answer) = answer {
+                    let _ = answer.send(result);
+                }
+            }
+        }
+    };
 
     Some(quote! {
         #message_decl
@@ -284,12 +484,7 @@ fn expand_handler(
                 ctx: ::factories_actor::actor::MessageHandlerContext<'a, #message_ty, Self, #access>,
             ) -> impl ::core::future::Future<Output = ()> + 'a {
                 async move {
-                    let (#guard, #message_binding, answer) = ctx.into_parts();
-                    #destructure
-                    let result = guard.#fn_ident(#(#param_idents),*)#maybe_await;
-                    if let Some(answer) = answer {
-                        let _ = answer.send(result);
-                    }
+                    #body
                 }
             }
         }
