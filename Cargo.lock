@@ -109,6 +109,7 @@ name = "factories_actor"
 version = "0.1.0"
 dependencies = [
  "critical-section",
+ "factories_collect",
  "factories_rtti",
  "futures",
  "kanal",

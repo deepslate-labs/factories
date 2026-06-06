@@ -259,10 +259,10 @@ pub unsafe trait ActorRuntimeBinder: Send + Sync {
     /// Note that this intentionally doesn't have access to the actor state,
     /// as the binding happens on the caller side.
     ///
-    /// Note that this must also validate that the message can be dispatched
-    /// to the actor thread. If the message is not `Send`, then this must
-    /// return `None` if the dispatcher can't guarantee that the message
-    /// is accessed on the thread this is called from.
+    /// Envelope sendability is NOT the binder's concern: channels that
+    /// transport deliveries across threads verify
+    /// [`MessageEnvelope::is_sendable`](crate::message::envelope::MessageEnvelope::is_sendable)
+    /// at the boundary (see [`ActorChannel`]).
     fn bind(&self, message: &MessageRtti) -> Option<ActorMessageDispatcher>;
 }
 

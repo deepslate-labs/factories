@@ -6,5 +6,8 @@ pub mod kanal;
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio;
 
+#[cfg(feature = "dynamic-dispatch")]
+pub mod registry;
+
 pub mod concurrent_loop;
 pub mod routing;

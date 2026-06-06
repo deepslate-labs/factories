@@ -63,6 +63,7 @@ impl<'ctx> DispatchContextPtr<'ctx> {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct ActorMessageDispatcher {
     handler: ActorMessageDispatcherHandler,
 }

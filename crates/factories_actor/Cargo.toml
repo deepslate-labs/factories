@@ -4,13 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-full-runtime = ["kanal-runtime", "tokio-answer", "tokio-runtime"]
+full-runtime = ["kanal-runtime", "tokio-answer", "tokio-runtime", "dynamic-dispatch"]
 
 # This is pretty lightweight, only pulls in tokio sync and not the runtime
 tokio-answer = ["dep:tokio", "tokio/sync"]
 kanal-runtime = ["dep:kanal", "kanal/async"]
 tokio-runtime = ["dep:tokio", "tokio/rt", "tokio/sync"]
 tracing = ["dep:tracing"]
+
+# Global dynamic-dispatch registry: handlers registered at binary load via
+# link-section constructors (factories_collect).
+dynamic-dispatch = ["dep:factories_collect"]
 
 [dependencies]
 kanal = { workspace = true, optional = true, default-features = false }
@@ -22,6 +26,7 @@ once_cell = { workspace = true, features = ["critical-section"] }
 
 paste = { workspace = true }
 factories_rtti = { workspace = true }
+factories_collect = { workspace = true, optional = true }
 seq-macro = { workspace = true }
 typed-builder = { workspace = true }
 

@@ -4,6 +4,8 @@ pub use factories_rtti::{AutorefSpecialized, BasicTypeRtti, CloneRtti, autoref_s
 use crate::message::channel::AnswerSender;
 use crate::message::Message;
 use core::any::TypeId;
+use core::num::NonZeroUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Contains all the information required at runtime about a message type.
 //
@@ -23,6 +25,9 @@ pub struct MessageRtti {
     message_send_info: AutorefSpecialized<bool>,
     answer_sender_send_info: AutorefSpecialized<bool>,
     answer_sender_info: BasicTypeRtti,
+
+    /// Runtime-assigned dynamic dispatch ID, zero while unassigned.
+    dynamic_dispatch_id: AtomicUsize,
 }
 
 impl MessageRtti {
@@ -44,6 +49,7 @@ impl MessageRtti {
             message_send_info,
             answer_sender_send_info,
             answer_sender_info: BasicTypeRtti::new::<AnswerSender<T>>(),
+            dynamic_dispatch_id: AtomicUsize::new(0),
         }
     }
 
@@ -88,6 +94,42 @@ impl MessageRtti {
     /// Retrieve the identity of this RTTI.
     pub fn identity(&self) -> usize {
         core::ptr::from_ref(self).addr()
+    }
+
+    /// Retrieve the dynamic dispatch ID assigned to this message type, if any.
+    ///
+    /// IDs are assigned at runtime by a dispatch registry (e.g. the global
+    /// registry of the `dynamic-dispatch` feature) and uniquely identify this
+    /// message RTTI within the registry's dispatch tables.
+    pub fn dynamic_dispatch_id(&self) -> Option<NonZeroUsize> {
+        // Relaxed suffices: consumers reach the dispatch tables keyed by these
+        // IDs through their own synchronization (e.g. the registry's once
+        // cell), which orders the assignment before any lookup.
+        NonZeroUsize::new(self.dynamic_dispatch_id.load(Ordering::Relaxed))
+    }
+
+    /// Assign the dynamic dispatch ID of this message type.
+    ///
+    /// The slot is write-once: a second assignment fails with the already
+    /// assigned ID. Zero is reserved as the unassigned sentinel, which the
+    /// `NonZeroUsize` ID type rules out by construction.
+    ///
+    /// # Safety
+    /// The caller must ensure that within all lookup structures consuming the
+    /// ID, it uniquely identifies this message RTTI - binders index dispatch
+    /// tables by it, and a colliding ID makes them bind a dispatcher of a
+    /// different message type.
+    pub unsafe fn assign_dynamic_dispatch_id(&self, id: NonZeroUsize) -> Result<(), NonZeroUsize> {
+        match self.dynamic_dispatch_id.compare_exchange(
+            0,
+            id.get(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => Ok(()),
+            // The CAS failed against the zero sentinel, so the value is non-zero.
+            Err(existing) => Err(NonZeroUsize::new(existing).expect("CAS failure implies non-zero")),
+        }
     }
 }
 

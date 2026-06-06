@@ -11,6 +11,10 @@ pub mod spawn;
 #[doc(hidden)]
 pub use factories_rtti;
 
+#[cfg(feature = "dynamic-dispatch")]
+#[doc(hidden)]
+pub use factories_collect;
+
 #[doc(hidden)]
 pub use paste;
 

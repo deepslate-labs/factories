@@ -16,8 +16,15 @@ use alloc::sync::Arc;
 use core::marker::PhantomData;
 use thiserror::Error;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TypedActorHandle<A: Actor>(Arc<ActorIdentity<A>>);
+
+// Manual impl so that the handle stays clonable even when A: !Clone
+impl<A: Actor> Clone for TypedActorHandle<A> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<A: Actor> TypedActorHandle<A> {
     /// Assemble an actor handle from its parts.
