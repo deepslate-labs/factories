@@ -1,0 +1,65 @@
+use proc_macro2::TokenStream;
+use quote::quote;
+use syn::{DeriveInput, LitStr, Type};
+
+use crate::util;
+
+/// Parsed `#[message(...)]` configuration. Multiple `#[message(...)]`
+/// attributes merge, duplicate keys are rejected.
+#[derive(Default)]
+struct MessageConfig {
+    answer: Option<Type>,
+    name: Option<LitStr>,
+}
+
+pub fn derive_message(input: DeriveInput) -> TokenStream {
+    util::reject_generics(&input, "Message");
+
+    let mut config = MessageConfig::default();
+    for attr in &input.attrs {
+        if !attr.path().is_ident("message") {
+            continue;
+        }
+
+        // An unrecoverable parse error ends this attribute, not the derive:
+        // the remaining attributes are still checked so all diagnostics
+        // surface in one compiler pass.
+        let result = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("answer") {
+                util::set_value(&mut config.answer, &meta)
+            } else if meta.path.is_ident("name") {
+                util::set_value(&mut config.name, &meta)
+            } else {
+                Err(meta.error("unknown key, expected one of `answer`, `name`"))
+            }
+        });
+
+        if let Err(error) = result {
+            util::emit_syn_error(error);
+        }
+    }
+
+    let ident = &input.ident;
+    let answer = util::value_or_default(config.answer, quote!(()));
+    let rtti_name = util::rtti_name(config.name, ident);
+
+    // The `unsafe impl` is sound by construction: the RTTI and the impl are
+    // emitted for the same type token in one expansion. (If diagnostics were
+    // emitted above, proc_macro_error discards this output.)
+    quote! {
+        const _: () = {
+            ::factories_actor::message::rtti::declare_message_rtti!(
+                __DERIVED_MESSAGE_RTTI,
+                #ident,
+                #rtti_name
+            );
+
+            unsafe impl ::factories_actor::message::Message for #ident {
+                const RTTI: &'static ::factories_actor::message::rtti::MessageRtti =
+                    __DERIVED_MESSAGE_RTTI;
+
+                type Answer = #answer;
+            }
+        };
+    }
+}

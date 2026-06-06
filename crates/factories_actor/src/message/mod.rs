@@ -4,6 +4,12 @@ pub mod rtti;
 pub mod channel;
 pub mod envelope;
 
+/// Derive macro generating a [`Message`] implementation together with its
+/// RTTI declaration. Configured via `#[message(...)]`; the answer type
+/// defaults to `()`.
+#[cfg(feature = "derive")]
+pub use factories_actor_macro::Message;
+
 /// Declares a struct as being an actor message type.
 pub unsafe trait Message where Self: Sized + 'static {
     /// The RTTI associated with this message.

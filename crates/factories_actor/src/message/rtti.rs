@@ -147,9 +147,15 @@ impl PartialEq for MessageRtti {
 impl Eq for MessageRtti {}
 
 /// Declare a message RTTI.
+///
+/// The optional third argument overrides the debug name baked into the RTTI
+/// (defaults to the stringified type).
 #[macro_export]
 macro_rules! declare_message_rtti {
     ($name:ident, $type:ty) => {
+        $crate::message::rtti::declare_message_rtti!($name, $type, ::core::stringify!($type));
+    };
+    ($name:ident, $type:ty, $message_name:expr) => {
         pub const $name: &'static $crate::message::rtti::MessageRtti = const {
             const CLONE_RTTI: $crate::factories_rtti::AutorefSpecialized<Option<$crate::factories_rtti::CloneRtti>> = $crate::factories_rtti::autoref_specialize!(
                 $type -> Option<$crate::factories_rtti::CloneRtti> {
@@ -174,7 +180,7 @@ macro_rules! declare_message_rtti {
 
             static VALUE: $crate::message::rtti::MessageRtti = unsafe {
                 $crate::message::rtti::MessageRtti::new_named::<$type>(
-                    stringify!($type),
+                    $message_name,
                     CLONE_RTTI,
                     SEND_INFO,
                     ANSWER_SENDER_SEND_INFO,

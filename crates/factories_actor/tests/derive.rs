@@ -22,9 +22,10 @@ use factories_actor::runtime::kanal::SimpleKanalActorChannel;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
+use factories_actor::message::Message;
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioTaskSpawner};
 use factories_actor::spawn::ActorBuilder;
-use factories_actor::{declare_message, declare_static_dispatcher};
+use factories_actor::declare_static_dispatcher;
 
 // ---------------------------------------------------------------------------
 // Defaulted: every component comes from `runtime::defaults`.
@@ -35,9 +36,9 @@ struct Defaulted {
     value: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Message)]
+#[message(answer = u32)]
 struct Get;
-declare_message!(Get, u32);
 
 impl MessageHandler<Get> for Defaulted {
     type AccessMode = lock::Exclusive;
@@ -79,9 +80,9 @@ struct Customized {
     hits: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Message)]
+#[message(answer = u32, name = "hit")]
 struct Hit;
-declare_message!(Hit, u32);
 
 impl MessageHandler<Hit> for Customized {
     type AccessMode = lock::Exclusive;
@@ -111,6 +112,14 @@ impl MessageHandler<Hit> for Customized {
 #[actor(error = CustomError)]
 #[actor(name = "partial")]
 struct Partially;
+
+// ---------------------------------------------------------------------------
+// Tick: message with everything defaulted - the answer type must fall back
+// to `()`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Message)]
+struct Tick;
 
 // -- Tests ----------------------------------------------------------------------
 
@@ -151,6 +160,20 @@ fn rtti_names() {
     assert_eq!(<Defaulted as Actor>::RTTI.name(), "Defaulted");
     assert_eq!(<Customized as Actor>::RTTI.name(), "custom-actor");
     assert_eq!(<Partially as Actor>::RTTI.name(), "partial");
+}
+
+#[test]
+fn message_answer_types() {
+    assert_type_eq::<<Tick as Message>::Answer, ()>();
+    assert_type_eq::<<Get as Message>::Answer, u32>();
+    assert_type_eq::<<Hit as Message>::Answer, u32>();
+}
+
+#[test]
+fn message_rtti_names() {
+    assert_eq!(<Tick as Message>::RTTI.name(), "Tick");
+    assert_eq!(<Get as Message>::RTTI.name(), "Get");
+    assert_eq!(<Hit as Message>::RTTI.name(), "hit");
 }
 
 #[tokio::test]
