@@ -2,14 +2,14 @@
     feature = "dynamic-dispatch",
     feature = "kanal-runtime",
     feature = "tokio-runtime",
+    feature = "tokio-lock",
     feature = "tokio-answer"
 ))]
 
 use factories_actor::actor::handle::ActorHandle;
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::{
-    AccessMode, Actor, ActorInit, IdentityActorInit, LockStrategy, MessageHandler,
-    MessageHandlerContext,
+    Actor, ActorInit, IdentityActorInit, MessageHandler, MessageHandlerContext,
 };
 use factories_actor::actor::dispatch::StaticDispatcher;
 use factories_actor::message::Message;
@@ -18,8 +18,9 @@ use factories_actor::message::envelope::MessageEnvelope;
 use factories_actor::register_dynamic_handler;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
 use factories_actor::runtime::kanal::SimpleKanalActorChannel;
+use factories_actor::runtime::lock::{Exclusive, Shared};
 use factories_actor::runtime::registry::{RegistryBinder, dispatch_registry};
-use factories_actor::runtime::tokio::TokioTaskSpawner;
+use factories_actor::runtime::tokio::{TokioMutexLock, TokioRwLock, TokioTaskSpawner};
 use factories_actor::spawn::ActorBuilder;
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
 
@@ -32,29 +33,6 @@ struct Calc {
     value: u32,
 }
 
-struct CalcLock(tokio::sync::Mutex<Calc>);
-
-impl LockStrategy<Calc> for CalcLock {}
-
-impl From<Calc> for CalcLock {
-    fn from(value: Calc) -> Self {
-        Self(tokio::sync::Mutex::new(value))
-    }
-}
-
-struct CalcExclusive;
-
-impl AccessMode<Calc> for CalcExclusive {
-    type Guard<'a> = tokio::sync::MutexGuard<'a, Calc>;
-
-    fn acquire<'a>(lock_strategy: &'a CalcLock) -> impl Future<Output = Self::Guard<'a>>
-    where
-        Self: 'a,
-    {
-        lock_strategy.0.lock()
-    }
-}
-
 declare_actor_rtti!(CALC_RTTI, Calc);
 
 // SAFETY: The RTTI is declared for exactly this type.
@@ -64,38 +42,16 @@ unsafe impl Actor for Calc {
     type Channel = SimpleKanalActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = RegistryBinder<Calc>;
-    type LockStrategy = CalcLock;
+    type LockStrategy = TokioMutexLock<Calc>;
     type RunLoop = ConcurrentRunLoop<Calc>;
 }
 
 // ---------------------------------------------------------------------------
-// Mirror: handles only the shared message (Describe).
+// Mirror: handles only the shared message (Describe), through a read-write
+// lock so the handler can use the `Shared` access mode.
 // ---------------------------------------------------------------------------
 
 struct Mirror;
-
-struct MirrorLock(tokio::sync::Mutex<Mirror>);
-
-impl LockStrategy<Mirror> for MirrorLock {}
-
-impl From<Mirror> for MirrorLock {
-    fn from(value: Mirror) -> Self {
-        Self(tokio::sync::Mutex::new(value))
-    }
-}
-
-struct MirrorExclusive;
-
-impl AccessMode<Mirror> for MirrorExclusive {
-    type Guard<'a> = tokio::sync::MutexGuard<'a, Mirror>;
-
-    fn acquire<'a>(lock_strategy: &'a MirrorLock) -> impl Future<Output = Self::Guard<'a>>
-    where
-        Self: 'a,
-    {
-        lock_strategy.0.lock()
-    }
-}
 
 declare_actor_rtti!(MIRROR_RTTI, Mirror);
 
@@ -106,7 +62,7 @@ unsafe impl Actor for Mirror {
     type Channel = SimpleKanalActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = RegistryBinder<Mirror>;
-    type LockStrategy = MirrorLock;
+    type LockStrategy = TokioRwLock<Mirror>;
     type RunLoop = ConcurrentRunLoop<Mirror>;
 }
 
@@ -117,13 +73,13 @@ struct AddValue(u32);
 declare_message!(AddValue, ());
 
 impl MessageHandler<AddValue> for Calc {
-    type AccessMode = CalcExclusive;
+    type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Calc, AddValue> =
         declare_static_dispatcher!(Calc, AddValue);
 
     fn handle<'a>(
-        ctx: MessageHandlerContext<'a, AddValue, Self, CalcExclusive>,
+        ctx: MessageHandlerContext<'a, AddValue, Self, Exclusive>,
     ) -> impl Future<Output = ()> + 'a {
         async move {
             let (mut guard, message, _) = ctx.into_parts();
@@ -141,13 +97,13 @@ struct GetValue;
 declare_message!(GetValue, u32);
 
 impl MessageHandler<GetValue> for Calc {
-    type AccessMode = CalcExclusive;
+    type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Calc, GetValue> =
         declare_static_dispatcher!(Calc, GetValue);
 
     fn handle<'a>(
-        ctx: MessageHandlerContext<'a, GetValue, Self, CalcExclusive>,
+        ctx: MessageHandlerContext<'a, GetValue, Self, Exclusive>,
     ) -> impl Future<Output = ()> + 'a {
         async move {
             let (guard, _, answer) = ctx.into_parts();
@@ -166,13 +122,13 @@ struct Describe;
 declare_message!(Describe, String);
 
 impl MessageHandler<Describe> for Calc {
-    type AccessMode = CalcExclusive;
+    type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Calc, Describe> =
         declare_static_dispatcher!(Calc, Describe);
 
     fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Describe, Self, CalcExclusive>,
+        ctx: MessageHandlerContext<'a, Describe, Self, Exclusive>,
     ) -> impl Future<Output = ()> + 'a {
         async move {
             let (guard, _, answer) = ctx.into_parts();
@@ -186,13 +142,13 @@ impl MessageHandler<Describe> for Calc {
 register_dynamic_handler!(Calc, Describe);
 
 impl MessageHandler<Describe> for Mirror {
-    type AccessMode = MirrorExclusive;
+    type AccessMode = Shared;
 
     const DISPATCHER: StaticDispatcher<Mirror, Describe> =
         declare_static_dispatcher!(Mirror, Describe);
 
     fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Describe, Self, MirrorExclusive>,
+        ctx: MessageHandlerContext<'a, Describe, Self, Shared>,
     ) -> impl Future<Output = ()> + 'a {
         async move {
             let (_, _, answer) = ctx.into_parts();
@@ -211,13 +167,13 @@ struct Unregistered;
 declare_message!(Unregistered, ());
 
 impl MessageHandler<Unregistered> for Calc {
-    type AccessMode = CalcExclusive;
+    type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Calc, Unregistered> =
         declare_static_dispatcher!(Calc, Unregistered);
 
     fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Unregistered, Self, CalcExclusive>,
+        ctx: MessageHandlerContext<'a, Unregistered, Self, Exclusive>,
     ) -> impl Future<Output = ()> + 'a {
         async move {
             drop(ctx);

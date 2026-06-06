@@ -4,10 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-full-runtime = ["kanal-runtime", "tokio-answer", "tokio-runtime", "dynamic-dispatch"]
+full-runtime = [
+    "kanal-runtime",
+    "tokio-answer",
+    "tokio-runtime",
+    "tokio-lock",
+    "dynamic-dispatch",
+]
 
 # This is pretty lightweight, only pulls in tokio sync and not the runtime
 tokio-answer = ["dep:tokio", "tokio/sync"]
+
+# Lock strategies backed by tokio's async sync primitives (no runtime needed)
+tokio-lock = ["dep:tokio", "tokio/sync"]
 kanal-runtime = ["dep:kanal", "kanal/async"]
 tokio-runtime = ["dep:tokio", "tokio/rt", "tokio/sync"]
 tracing = ["dep:tracing"]

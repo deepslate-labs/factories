@@ -3,11 +3,12 @@
 #[cfg(feature = "kanal-runtime")]
 pub mod kanal;
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(any(feature = "tokio-runtime", feature = "tokio-lock"))]
 pub mod tokio;
 
 #[cfg(feature = "dynamic-dispatch")]
 pub mod registry;
 
 pub mod concurrent_loop;
+pub mod lock;
 pub mod routing;
