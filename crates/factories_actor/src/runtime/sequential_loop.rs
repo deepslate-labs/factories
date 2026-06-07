@@ -90,20 +90,23 @@ where
 {
     type Config = ();
 
-    fn run_with<F>(
+    fn run_with<I>(
         _config: (),
-        init: F,
+        init: I,
         shared: SharedActorState<A>,
         mailbox: impl ActorMailbox + Send + 'static,
     ) -> impl Future<Output = ()> + Send + 'static
     where
-        F: Future<Output = Result<A, A::Error>> + Send + 'static,
+        I: crate::actor::ActorInit<A> + Send + 'static,
+        I::Fut: Send,
     {
         async move {
             // Loop exit, handler panic and task abort all transition to `Dead`.
             let _guard = shared.dead_on_drop();
 
-            let actor = match init.await {
+            // The initializer crossed onto this task; the actor is constructed
+            // where it will live.
+            let actor = match init.init().await {
                 Ok(actor) => actor,
                 Err(err) => {
                     // Error first, then the guard's drop transitions to dead -

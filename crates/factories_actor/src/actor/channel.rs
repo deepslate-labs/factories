@@ -1,7 +1,7 @@
-use core::pin::Pin;
-use alloc::boxed::Box;
-use thiserror::Error;
 use crate::actor::dispatch::DispatchedActorMessage;
+use alloc::boxed::Box;
+use core::pin::Pin;
+use thiserror::Error;
 
 pub type ActorChannelSendResult = Result<(), ActorChannelSendError>;
 pub type PinnedActorChannelSendFuture<'a> =
@@ -113,4 +113,3 @@ pub enum ActorChannelSendError {
     #[error(transparent)]
     Other(Box<dyn core::error::Error + Send + Sync>),
 }
-

@@ -4,7 +4,6 @@
 
 use factories_actor::actor::channel::ActorChannelSendable;
 use factories_actor::actor::handle::ActorHandle;
-use factories_actor::actor::{ActorInit, IdentityActorInit};
 use factories_actor::message::Message;
 use factories_actor::message::envelope::MessageEnvelope;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
@@ -82,12 +81,8 @@ fn generated_message_shapes() {
 async fn method_handlers_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Customized>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Customized { hits: 0 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Customized { hits: 0 })
         .await
         .expect("customized init is infallible");
 
@@ -112,12 +107,8 @@ async fn method_handlers_roundtrip() {
 async fn method_handlers_register_dynamically() {
     let spawner = TokioTaskSpawner::current();
 
-    let typed = ActorBuilder::<Defaulted>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Defaulted { value: 7 }).init(),
-        )
+    let typed = ActorBuilder::default()
+        .spawn_ready(&spawner, Defaulted { value: 7 })
         .await
         .expect("defaulted init is infallible");
     let erased = typed.clone().erase_type();

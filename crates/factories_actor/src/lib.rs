@@ -6,8 +6,8 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-pub mod message;
 pub mod actor;
+pub mod message;
 pub mod runtime;
 pub mod spawn;
 

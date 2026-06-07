@@ -6,12 +6,10 @@
     feature = "tokio-answer"
 ))]
 
+use factories_actor::actor::dispatch::StaticDispatcher;
 use factories_actor::actor::handle::ActorHandle;
 use factories_actor::actor::rtti::ActorRtti;
-use factories_actor::actor::{
-    Actor, ActorInit, IdentityActorInit, MessageHandler, MessageHandlerContext,
-};
-use factories_actor::actor::dispatch::StaticDispatcher;
+use factories_actor::actor::{Actor, MessageHandler, MessageHandlerContext};
 use factories_actor::message::Message;
 use factories_actor::message::channel::answer_channel;
 use factories_actor::message::envelope::MessageEnvelope;
@@ -75,8 +73,7 @@ declare_message!(AddValue, ());
 impl MessageHandler<AddValue> for Calc {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Calc, AddValue> =
-        declare_static_dispatcher!(Calc, AddValue);
+    const DISPATCHER: StaticDispatcher<Calc, AddValue> = declare_static_dispatcher!(Calc, AddValue);
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, AddValue, Self, Exclusive>,
@@ -99,8 +96,7 @@ declare_message!(GetValue, u32);
 impl MessageHandler<GetValue> for Calc {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Calc, GetValue> =
-        declare_static_dispatcher!(Calc, GetValue);
+    const DISPATCHER: StaticDispatcher<Calc, GetValue> = declare_static_dispatcher!(Calc, GetValue);
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, GetValue, Self, Exclusive>,
@@ -124,8 +120,7 @@ declare_message!(Describe, String);
 impl MessageHandler<Describe> for Calc {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Calc, Describe> =
-        declare_static_dispatcher!(Calc, Describe);
+    const DISPATCHER: StaticDispatcher<Calc, Describe> = declare_static_dispatcher!(Calc, Describe);
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Describe, Self, Exclusive>,
@@ -186,9 +181,8 @@ impl MessageHandler<Unregistered> for Calc {
 async fn spawn_calc(value: u32) -> factories_actor::actor::handle::TypedActorHandle<Calc> {
     let spawner = TokioTaskSpawner::current();
 
-    ActorBuilder::<Calc>::builder()
-        .build()
-        .spawn_ready(&spawner, IdentityActorInit::new(Calc { value }).init())
+    ActorBuilder::default()
+        .spawn_ready(&spawner, Calc { value })
         .await
         .expect("calc init is infallible")
 }
@@ -196,9 +190,8 @@ async fn spawn_calc(value: u32) -> factories_actor::actor::handle::TypedActorHan
 async fn spawn_mirror() -> factories_actor::actor::handle::TypedActorHandle<Mirror> {
     let spawner = TokioTaskSpawner::current();
 
-    ActorBuilder::<Mirror>::builder()
-        .build()
-        .spawn_ready(&spawner, IdentityActorInit::new(Mirror).init())
+    ActorBuilder::default()
+        .spawn_ready(&spawner, Mirror)
         .await
         .expect("mirror init is infallible")
 }

@@ -4,9 +4,7 @@
 //! `Defaulted` and `Customized` double as fixtures for the other modules.
 
 use factories_actor::actor::dispatch::StaticDispatcher;
-use factories_actor::actor::{
-    Actor, ActorInit, IdentityActorInit, MessageHandler, MessageHandlerContext, StaticOnlyBinder,
-};
+use factories_actor::actor::{Actor, MessageHandler, MessageHandlerContext, StaticOnlyBinder};
 use factories_actor::declare_static_dispatcher;
 use factories_actor::message::Message;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
@@ -37,8 +35,7 @@ pub struct Get;
 impl MessageHandler<Get> for Defaulted {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Defaulted, Get> =
-        declare_static_dispatcher!(Defaulted, Get);
+    const DISPATCHER: StaticDispatcher<Defaulted, Get> = declare_static_dispatcher!(Defaulted, Get);
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Get, Self, lock::Exclusive>,
@@ -144,12 +141,8 @@ fn rtti_names() {
 async fn derived_default_kit_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Defaulted>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Defaulted { value: 7 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Defaulted { value: 7 })
         .await
         .expect("defaulted init is infallible");
 
@@ -160,12 +153,8 @@ async fn derived_default_kit_roundtrip() {
 async fn derived_custom_kit_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Customized>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Customized { hits: 0 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Customized { hits: 0 })
         .await
         .expect("customized init is infallible");
 

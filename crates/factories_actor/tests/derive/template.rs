@@ -1,7 +1,7 @@
 //! `ActorTemplate`: reusable component bundles, with explicit keys overriding
 //! individual members.
 
-use factories_actor::actor::{Actor, ActorInit, IdentityActorInit, StaticOnlyBinder};
+use factories_actor::actor::{Actor, StaticOnlyBinder};
 use factories_actor::runtime::kanal::SimpleKanalActorChannel;
 use factories_actor::runtime::lock::UnguardedLock;
 use factories_actor::runtime::registry::RegistryBinder;
@@ -57,9 +57,11 @@ fn template_supplies_components() {
 #[test]
 fn explicit_keys_override_template_members() {
     assert_type_eq::<<TemplatedOverride as Actor>::Error, CustomError>();
-    assert_type_eq::<<TemplatedOverride as Actor>::RuntimeBinder, RegistryBinder<TemplatedOverride>>();
+    assert_type_eq::<<TemplatedOverride as Actor>::RuntimeBinder, RegistryBinder<TemplatedOverride>>(
+    );
     // Untouched members still come from the template.
-    assert_type_eq::<<TemplatedOverride as Actor>::LockStrategy, UnguardedLock<TemplatedOverride>>();
+    assert_type_eq::<<TemplatedOverride as Actor>::LockStrategy, UnguardedLock<TemplatedOverride>>(
+    );
     assert_type_eq::<<TemplatedOverride as Actor>::RunLoop, SequentialRunLoop<TemplatedOverride>>();
 }
 
@@ -67,12 +69,8 @@ fn explicit_keys_override_template_members() {
 async fn templated_actor_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Templated>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Templated { total: 0 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Templated { total: 0 })
         .await
         .expect("templated init is infallible");
 

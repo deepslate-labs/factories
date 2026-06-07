@@ -79,13 +79,9 @@ struct GreeterInit {
 }
 
 impl ActorInit<Greeter> for GreeterInit {
-    type Args = (String, bool);
+    type Fut = core::future::Ready<Result<Greeter, InitError>>;
 
-    fn prepare((greeting, fail): Self::Args) -> Self {
-        Self { greeting, fail }
-    }
-
-    fn init(self) -> impl Future<Output = Result<Greeter, InitError>> {
+    fn init(self) -> Self::Fut {
         core::future::ready(if self.fail {
             Err(InitError)
         } else {
@@ -107,8 +103,7 @@ declare_message!(Greet, String);
 impl MessageHandler<Greet> for Greeter {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Greeter, Greet> =
-        declare_static_dispatcher!(Greeter, Greet);
+    const DISPATCHER: StaticDispatcher<Greeter, Greet> = declare_static_dispatcher!(Greeter, Greet);
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Greet, Self, Exclusive>,
@@ -174,9 +169,13 @@ impl MessageHandler<NotSendableMsg> for Greeter {
 async fn builder_spawn_tell_ask_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Greeter>::builder()
-        .build()
-        .spawn(&spawner, GreeterInit::prepare(("Hello".into(), false)).init());
+    let handle = ActorBuilder::default().spawn(
+        &spawner,
+        GreeterInit {
+            greeting: "Hello".into(),
+            fail: false,
+        },
+    );
 
     handle
         .tell(SetGreeting {
@@ -187,9 +186,7 @@ async fn builder_spawn_tell_ask_roundtrip() {
         .expect("tell must succeed");
 
     let reply = handle
-        .ask(Greet {
-            name: "Max".into(),
-        })
+        .ask(Greet { name: "Max".into() })
         .exchange()
         .await
         .expect("ask must succeed");
@@ -201,9 +198,14 @@ async fn builder_spawn_tell_ask_roundtrip() {
 async fn spawn_ready_ok() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Greeter>::builder()
-        .build()
-        .spawn_ready(&spawner, GreeterInit::prepare(("Hi".into(), false)).init())
+    let handle = ActorBuilder::default()
+        .spawn_ready(
+            &spawner,
+            GreeterInit {
+                greeting: "Hi".into(),
+                fail: false,
+            },
+        )
         .await
         .expect("init must succeed");
 
@@ -211,12 +213,41 @@ async fn spawn_ready_ok() {
 }
 
 #[tokio::test]
+async fn init_closure_constructs_on_the_loop() {
+    let spawner = TokioTaskSpawner::current();
+
+    // The closure (captures = `Send` args) crosses to the actor task, the
+    // (async) construction runs there.
+    let greeting = "Servus".to_string();
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, || async move {
+            tokio::task::yield_now().await;
+            Ok(Greeter { greeting })
+        })
+        .await
+        .expect("init must succeed");
+
+    let reply = handle
+        .ask(Greet { name: "Max".into() })
+        .exchange()
+        .await
+        .expect("ask must succeed");
+
+    assert_eq!(reply, "Servus Max");
+}
+
+#[tokio::test]
 async fn spawn_ready_init_failure() {
     let spawner = TokioTaskSpawner::current();
 
-    let result = ActorBuilder::<Greeter>::builder()
-        .build()
-        .spawn_ready(&spawner, GreeterInit::prepare(("Hi".into(), true)).init())
+    let result = ActorBuilder::default()
+        .spawn_ready(
+            &spawner,
+            GreeterInit {
+                greeting: "Hi".into(),
+                fail: true,
+            },
+        )
         .await;
 
     assert_eq!(result.err(), Some(InitError));
@@ -226,9 +257,13 @@ async fn spawn_ready_init_failure() {
 async fn sends_after_init_failure_report_dead() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Greeter>::builder()
-        .build()
-        .spawn(&spawner, GreeterInit::prepare(("Hi".into(), true)).init());
+    let handle = ActorBuilder::default().spawn(
+        &spawner,
+        GreeterInit {
+            greeting: "Hi".into(),
+            fail: true,
+        },
+    );
 
     // Wait until the failed init has marked the actor dead. The mailbox is
     // dropped before the dead-on-drop guard fires, so `Dead` implies closed.
@@ -251,9 +286,14 @@ async fn sends_after_init_failure_report_dead() {
 async fn non_send_message_rejected_at_channel() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Greeter>::builder()
-        .build()
-        .spawn_ready(&spawner, GreeterInit::prepare(("Hi".into(), false)).init())
+    let handle = ActorBuilder::default()
+        .spawn_ready(
+            &spawner,
+            GreeterInit {
+                greeting: "Hi".into(),
+                fail: false,
+            },
+        )
         .await
         .expect("init");
 
@@ -288,7 +328,10 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
     // Step 3: run loop future from config + parts
     let fut = <ConcurrentRunLoop<Greeter> as SpawnableRunLoop<Greeter>>::run_with(
         (),
-        GreeterInit::prepare(("Moin".into(), false)).init(),
+        GreeterInit {
+            greeting: "Moin".into(),
+            fail: false,
+        },
         shared.clone(),
         mailbox,
     );
@@ -298,8 +341,11 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
     let _ = shared.attach_task(task);
 
     // Step 5: assemble the handle
-    let handle =
-        factories_actor::actor::handle::TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
+    let handle = factories_actor::actor::handle::TypedActorHandle::assemble(
+        channel,
+        StaticOnlyBinder,
+        shared,
+    );
 
     let reply = handle
         .ask(Greet {
@@ -444,8 +490,11 @@ async fn custom_loop_without_assembly_contract() {
     });
     let _ = shared.attach_task(task);
 
-    let handle =
-        factories_actor::actor::handle::TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
+    let handle = factories_actor::actor::handle::TypedActorHandle::assemble(
+        channel,
+        StaticOnlyBinder,
+        shared,
+    );
 
     assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 1);
     assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 2);
@@ -457,9 +506,14 @@ async fn custom_loop_without_assembly_contract() {
 async fn lifecycle_dead_after_handle_dropped() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Greeter>::builder()
-        .build()
-        .spawn_ready(&spawner, GreeterInit::prepare(("Hi".into(), false)).init())
+    let handle = ActorBuilder::default()
+        .spawn_ready(
+            &spawner,
+            GreeterInit {
+                greeting: "Hi".into(),
+                fail: false,
+            },
+        )
         .await
         .expect("init");
 
@@ -527,12 +581,8 @@ impl MessageHandler<Bump> for Tally {
 async fn sequential_loop_with_unguarded_lock() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Tally>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            factories_actor::actor::IdentityActorInit::new(Tally { total: 0 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Tally { total: 0 })
         .await
         .expect("tally init is infallible");
 

@@ -1,7 +1,7 @@
-use crate::actor::Actor;
 use crate::actor::handle::TypedActorHandle;
 use crate::actor::state::{LifecycleState, SharedActorState};
-use crate::spawn::{ActorTaskSpawner, CreatableChannel, SpawnableRunLoop};
+use crate::actor::{Actor, ActorInit};
+use crate::spawn::{ActorTaskSpawner, CreatableChannel, IntoActorInit, SpawnableRunLoop};
 use typed_builder::TypedBuilder;
 
 /// Builder for the standard actor assembly process.
@@ -35,25 +35,48 @@ where
     binder: A::RuntimeBinder,
 }
 
+/// All parts defaultable: `ActorBuilder::default().spawn(...)` skips the
+/// builder ceremony for the standard kit.
+impl<A: Actor> Default for ActorBuilder<A>
+where
+    A::Channel: CreatableChannel,
+    A::RunLoop: SpawnableRunLoop<A>,
+    A::Error: Send + Sync + 'static,
+    <A::Channel as CreatableChannel>::CreationOptions: Default,
+    <A::RunLoop as SpawnableRunLoop<A>>::Config: Default,
+    A::RuntimeBinder: Default,
+{
+    fn default() -> Self {
+        Self {
+            channel_options: Default::default(),
+            loop_config: Default::default(),
+            binder: Default::default(),
+        }
+    }
+}
+
 impl<A: Actor> ActorBuilder<A>
 where
     A::Channel: CreatableChannel,
     A::RunLoop: SpawnableRunLoop<A>,
     A::Error: Send + Sync + 'static,
 {
-    /// Assemble and fire. The init future runs inside the spawned task.
+    /// Assemble and fire. The initializer crosses into the spawned task, where
+    /// [`ActorInit::init`] constructs the actor.
     ///
     /// Messages sent before init completes queue in the mailbox. If init fails,
     /// the error lands in the shared state, the mailbox closes and senders
     /// observe [`crate::actor::channel::ActorChannelSendError::ActorDead`].
-    pub fn spawn<F>(self, spawner: &impl ActorTaskSpawner, init: F) -> TypedActorHandle<A>
+    pub fn spawn<I, M>(self, spawner: &impl ActorTaskSpawner, init: I) -> TypedActorHandle<A>
     where
-        F: Future<Output = Result<A, A::Error>> + Send + 'static,
+        I: IntoActorInit<A, M>,
+        I::Init: Send + 'static,
+        <I::Init as ActorInit<A>>::Fut: Send,
     {
         let (channel, mailbox) = A::Channel::create(self.channel_options);
         let shared = SharedActorState::new();
 
-        let fut = A::RunLoop::run_with(self.loop_config, init, shared.clone(), mailbox);
+        let fut = A::RunLoop::run_with(self.loop_config, init.into_init(), shared.clone(), mailbox);
         let task = spawner.spawn(fut);
         let _ = shared.attach_task(task);
 
@@ -63,15 +86,16 @@ where
     /// Spawn and wait until init has resolved.
     ///
     /// Returns the actor's init error if initialization failed. An actor that
-    /// ran and exited normally before this observed `Running` yields `Ok` - the
-    /// handle then honestly reports `ActorDead` on send.
-    pub async fn spawn_ready<F>(
+    /// ran and exited normally before this observed `Running` yields `Ok`.
+    pub async fn spawn_ready<I, M>(
         self,
         spawner: &impl ActorTaskSpawner,
-        init: F,
+        init: I,
     ) -> Result<TypedActorHandle<A>, A::Error>
     where
-        F: Future<Output = Result<A, A::Error>> + Send + 'static,
+        I: IntoActorInit<A, M>,
+        I::Init: Send + 'static,
+        <I::Init as ActorInit<A>>::Fut: Send,
         A::Error: Clone,
     {
         let handle = self.spawn(spawner, init);

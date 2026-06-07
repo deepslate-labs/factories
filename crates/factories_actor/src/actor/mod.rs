@@ -48,47 +48,32 @@ pub unsafe trait Actor: 'static {
     type RunLoop: ActorRunLoop<Self>;
 }
 
-/// Actor initialization protocol.
+/// Actor initialization protocol: the `Send` boundary of actor construction.
 ///
-/// The idea here is mainly that an actor `A` can be constructed with some
-/// argument type `Args`.
-pub trait ActorInit<A: Actor> {
-    type Args;
+/// The *initializer* is what crosses onto the actor task; [`init`](Self::init)
+/// runs over there, so the actor is constructed where it will live. The purpose
+/// is to allow `Send`ing arguments to a run loop, even if the actor itself is
+/// not send.
+pub trait ActorInit<A: Actor>: Sized {
+    // This is just here because RTN is not stable yet.
+    /// The future performing the initialization.
+    type Fut: Future<Output = Result<A, A::Error>>;
 
-    /// Prepare the initializer using the given arguments.
-    fn prepare(args: Self::Args) -> Self;
-
-    /// Consume the initializer and actually initialize the actor.
-    fn init(self) -> impl Future<Output = Result<A, A::Error>>;
+    /// Consume the initializer and construct the actor.
+    fn init(self) -> Self::Fut;
 }
 
-/// Identity-based actor initialization protocol.
-#[derive(Debug)]
-pub struct IdentityActorInit<A: Actor> {
-    actor: A,
-}
+// Every actor value is its own initializer: immediate and infallible.
+//
+// In this case the actor itself is what crosses onto its task - available
+// whenever that is fine (the actor is `Send`), which the work-stealing loops
+// require anyway. Actors that cannot cross use a dedicated initializer (or
+// [`InitFn`](crate::runtime::init::InitFn)) instead.
+impl<A: Actor> ActorInit<A> for A {
+    type Fut = core::future::Ready<Result<A, A::Error>>;
 
-impl<A: Actor> IdentityActorInit<A> {
-    pub const fn new(actor: A) -> Self {
-        Self { actor }
-    }
-}
-
-impl<A: Actor> ActorInit<A> for IdentityActorInit<A> {
-    type Args = A;
-
-    fn prepare(args: Self::Args) -> Self {
-        Self::new(args)
-    }
-
-    fn init(self) -> impl Future<Output = Result<A, A::Error>> {
-        core::future::ready(Ok(self.actor))
-    }
-}
-
-impl<A: Actor> From<A> for IdentityActorInit<A> {
-    fn from(value: A) -> Self {
-        Self::new(value)
+    fn init(self) -> Self::Fut {
+        core::future::ready(Ok(self))
     }
 }
 

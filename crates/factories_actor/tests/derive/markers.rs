@@ -3,7 +3,7 @@
 
 use factories_actor::actor::channel::ActorChannelSendable;
 use factories_actor::actor::handle::{ActorHandle, AnyActorHandle};
-use factories_actor::actor::{Actor, ActorInit, IdentityActorInit, StaticOnlyBinder};
+use factories_actor::actor::{Actor, StaticOnlyBinder};
 use factories_actor::message::channel::{AnswerSender, answer_channel};
 use factories_actor::message::envelope::{MessageEnvelope, SendableEnvelope};
 use factories_actor::runtime::lock::UnguardedLock;
@@ -71,12 +71,8 @@ impl Relay {
 async fn deferred_answer_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Deferring>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Deferring { pending: None }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Deferring { pending: None })
         .await
         .expect("deferring init is infallible");
     let erased = handle.clone().erase_type();
@@ -100,12 +96,8 @@ async fn deferred_answer_roundtrip() {
 async fn whole_message_passthrough() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Deferring>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Deferring { pending: None }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Deferring { pending: None })
         .await
         .expect("deferring init is infallible");
 
@@ -123,19 +115,14 @@ async fn whole_message_passthrough() {
 async fn envelope_forwarding_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let target = ActorBuilder::<Defaulted>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Defaulted { value: 7 }).init(),
-        )
+    let target = ActorBuilder::default()
+        .spawn_ready(&spawner, Defaulted { value: 7 })
         .await
         .expect("defaulted init is infallible")
         .erase_type();
 
-    let relay = ActorBuilder::<Relay>::builder()
-        .build()
-        .spawn_ready(&spawner, IdentityActorInit::new(Relay { target }).init())
+    let relay = ActorBuilder::default()
+        .spawn_ready(&spawner, Relay { target })
         .await
         .expect("relay init is infallible");
 

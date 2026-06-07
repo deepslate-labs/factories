@@ -1,19 +1,14 @@
 use crate::actor::state::SharedActorState;
-use crate::actor::{Actor, ActorRunLoop};
+use crate::actor::{Actor, ActorInit, ActorRunLoop};
 use crate::spawn::ActorMailbox;
 
 /// A run loop that can be constructed and driven as part of generic actor assembly.
 ///
-/// Symmetric with [`crate::spawn::CreatableChannel`]: configuration in, running
-/// part out. The returned future is the whole life of the actor - init, message
-/// processing, death - and is what gets handed to an
-/// [`crate::spawn::ActorTaskSpawner`].
-///
-/// The init arrives as a *future value* rather than an
-/// [`crate::actor::ActorInit`] bound: callers write
-/// `MyInit::prepare(args).init()` (or a bare `async` block), and auto-trait
-/// leakage at the concrete call site provides the `Send` proof. Creating the
-/// future runs no code - init still executes inside the spawned task.
+/// The init arrives as an [`ActorInit`] value: the *initializer* is what
+/// crosses onto the actor task, [`ActorInit::init`] runs inside it, and the
+/// actor is constructed where it will live. `I::Fut: Send` is *this*
+/// contract's demand (the loop future is handed to a work-stealing spawner) -
+/// a single-threaded assembly contract can omit it.
 ///
 /// Implementations must:
 /// - hold a [`SharedActorState::dead_on_drop`] guard for the entire future, and
@@ -29,14 +24,15 @@ where
     /// Configuration consumed when the loop starts.
     type Config: Send + 'static;
 
-    /// Run the loop by constructing the actor with the given init future.
-    fn run_with<F>(
+    /// Run the loop, constructing the actor with the given initializer.
+    fn run_with<I>(
         config: Self::Config,
-        init: F,
+        init: I,
         shared: SharedActorState<A>,
         mailbox: impl ActorMailbox + Send + 'static,
     ) -> impl Future<Output = ()> + Send + 'static
     where
-        F: Future<Output = Result<A, A::Error>> + Send + 'static,
+        I: ActorInit<A> + Send + 'static,
+        I::Fut: Send,
         A: Sized;
 }

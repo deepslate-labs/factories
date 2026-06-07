@@ -1,5 +1,5 @@
-use crate::message::channel::AnswerSender;
 use crate::message::Message;
+use crate::message::channel::AnswerSender;
 use crate::message::rtti::{BasicTypeRtti, MessageRtti};
 use alloc::boxed::Box;
 use core::fmt::{Debug, Formatter};

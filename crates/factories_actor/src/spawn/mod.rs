@@ -6,10 +6,12 @@
 
 mod builder;
 mod channel;
+mod init;
 mod run_loop;
 mod task;
 
 pub use builder::*;
 pub use channel::*;
+pub use init::*;
 pub use run_loop::*;
 pub use task::*;

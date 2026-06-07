@@ -1,8 +1,8 @@
 // Re-export general RTTI types so macros can use $crate paths
 pub use factories_rtti::{AutorefSpecialized, BasicTypeRtti, CloneRtti, autoref_specialize};
 
-use crate::message::channel::AnswerSender;
 use crate::message::Message;
+use crate::message::channel::AnswerSender;
 use core::any::TypeId;
 use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -128,7 +128,9 @@ impl MessageRtti {
         ) {
             Ok(_) => Ok(()),
             // The CAS failed against the zero sentinel, so the value is non-zero.
-            Err(existing) => Err(NonZeroUsize::new(existing).expect("CAS failure implies non-zero")),
+            Err(existing) => {
+                Err(NonZeroUsize::new(existing).expect("CAS failure implies non-zero"))
+            }
         }
     }
 }

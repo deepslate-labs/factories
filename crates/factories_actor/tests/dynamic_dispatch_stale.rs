@@ -4,14 +4,12 @@
 
 #![cfg(all(feature = "dynamic-dispatch", debug_assertions))]
 
-use factories_actor::actor::channel::{
-    ActorChannel, ActorChannelSendResult, ActorChannelSendable,
-};
+use factories_actor::actor::channel::{ActorChannel, ActorChannelSendResult, ActorChannelSendable};
 use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::{
-    AccessMode, Actor, ActorRunLoop, ActorRunLoopDispatchContext, ActorRuntimeBinder,
-    LockStrategy, MessageHandler, MessageHandlerContext, ThreadLocal,
+    AccessMode, Actor, ActorRunLoop, ActorRunLoopDispatchContext, ActorRuntimeBinder, LockStrategy,
+    MessageHandler, MessageHandlerContext, ThreadLocal,
 };
 use factories_actor::factories_collect::GlobalCollectionEntry;
 use factories_actor::message::Message;

@@ -1,8 +1,8 @@
 use crate::message::rtti::MessageRtti;
 
-pub mod rtti;
 pub mod channel;
 pub mod envelope;
+pub mod rtti;
 
 /// Derive macro generating a [`Message`] implementation together with its
 /// RTTI declaration. Configured via `#[message(...)]`; the answer type
@@ -11,7 +11,10 @@ pub mod envelope;
 pub use factories_actor_macro::Message;
 
 /// Declares a struct as being an actor message type.
-pub unsafe trait Message where Self: Sized + 'static {
+pub unsafe trait Message
+where
+    Self: Sized + 'static,
+{
     /// The RTTI associated with this message.
     ///
     /// This must match the actual type this trait is implemented on,

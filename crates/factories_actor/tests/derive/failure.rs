@@ -3,7 +3,7 @@
 
 use factories_actor::actor::channel::ActorChannelSendable;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
-use factories_actor::actor::{Actor, ActorContext, ActorInit, IdentityActorInit};
+use factories_actor::actor::{Actor, ActorContext};
 use factories_actor::runtime::lock::UnguardedLock;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
@@ -77,12 +77,8 @@ async fn wait_dead<A: Actor>(state: &SharedActorState<A>) {
 async fn die_on_err_forwards_error_and_kills() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Fragile>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Fragile { limit: 10 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Fragile { limit: 10 })
         .await
         .expect("fragile init is infallible");
 
@@ -116,12 +112,8 @@ async fn die_on_err_forwards_error_and_kills() {
 async fn die_on_err_consume_closes_answer_and_kills() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Fragile>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(Fragile { limit: 10 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Fragile { limit: 10 })
         .await
         .expect("fragile init is infallible");
 
@@ -150,9 +142,8 @@ async fn die_on_err_consume_closes_answer_and_kills() {
 async fn context_fail_kills_actor() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<Fragile>::builder()
-        .build()
-        .spawn_ready(&spawner, IdentityActorInit::new(Fragile { limit: 0 }).init())
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, Fragile { limit: 0 })
         .await
         .expect("fragile init is infallible");
 
@@ -166,12 +157,8 @@ async fn context_fail_kills_actor() {
 async fn die_on_err_on_concurrent_loop() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::<FragileConcurrent>::builder()
-        .build()
-        .spawn_ready(
-            &spawner,
-            IdentityActorInit::new(FragileConcurrent { limit: 5 }).init(),
-        )
+    let handle = ActorBuilder::default()
+        .spawn_ready(&spawner, FragileConcurrent { limit: 5 })
         .await
         .expect("fragile init is infallible");
 

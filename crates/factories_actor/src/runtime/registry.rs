@@ -451,9 +451,7 @@ unsafe impl<A: Actor + ?Sized> ActorRuntimeBinder for RegistryBinder<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actor::channel::{
-        ActorChannel, ActorChannelSendResult, ActorChannelSendable,
-    };
+    use crate::actor::channel::{ActorChannel, ActorChannelSendResult, ActorChannelSendable};
     use crate::actor::dispatch::{
         BoxedAcquireFuture, BoxedHandlerFuture, DispatchContextPtr, DispatchedActorMessage,
         DispatchedActorMessageContext,

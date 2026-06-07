@@ -287,7 +287,10 @@ pub trait ActorHandle: ActorHandleBase {
     }
 
     /// Bind the dispatcher for the given message type.
-    fn bind_dispatcher(&self, message: &MessageRtti) -> Option<crate::actor::dispatch::ActorMessageDispatcher> {
+    fn bind_dispatcher(
+        &self,
+        message: &MessageRtti,
+    ) -> Option<crate::actor::dispatch::ActorMessageDispatcher> {
         self.identity().bind(message)
     }
 
