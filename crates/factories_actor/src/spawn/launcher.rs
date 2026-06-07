@@ -4,7 +4,7 @@ use crate::actor::{Actor, ActorInit};
 use crate::spawn::{ActorTaskSpawner, CreatableChannel, IntoActorInit, SpawnableRunLoop};
 use typed_builder::TypedBuilder;
 
-/// Builder for the standard actor assembly process.
+/// Launcher for the standard actor assembly process.
 ///
 /// This is the front door for spawning actors whose parts implement the assembly
 /// contracts. It performs exactly the public layer-0 steps - everything it does
@@ -16,7 +16,7 @@ use typed_builder::TypedBuilder;
 /// 4. [`ActorTaskSpawner::spawn`] - task handle, attached to the shared state
 /// 5. [`TypedActorHandle::assemble`]
 #[derive(TypedBuilder)]
-pub struct ActorBuilder<A: Actor>
+pub struct ActorLauncher<A: Actor>
 where
     A::Channel: CreatableChannel,
     A::RunLoop: SpawnableRunLoop<A>,
@@ -35,9 +35,9 @@ where
     binder: A::RuntimeBinder,
 }
 
-/// All parts defaultable: `ActorBuilder::default().spawn(...)` skips the
+/// All parts defaultable: `ActorLauncher::default().spawn(...)` skips the
 /// builder ceremony for the standard kit.
-impl<A: Actor> Default for ActorBuilder<A>
+impl<A: Actor> Default for ActorLauncher<A>
 where
     A::Channel: CreatableChannel,
     A::RunLoop: SpawnableRunLoop<A>,
@@ -55,7 +55,7 @@ where
     }
 }
 
-impl<A: Actor> ActorBuilder<A>
+impl<A: Actor> ActorLauncher<A>
 where
     A::Channel: CreatableChannel,
     A::RunLoop: SpawnableRunLoop<A>,

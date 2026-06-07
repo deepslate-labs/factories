@@ -9,7 +9,7 @@ use factories_actor::message::envelope::{MessageEnvelope, SendableEnvelope};
 use factories_actor::runtime::lock::UnguardedLock;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorBuilder;
+use factories_actor::spawn::ActorLauncher;
 
 use crate::actor::Defaulted;
 use crate::handlers::{AddBoth, Probe};
@@ -71,7 +71,7 @@ impl Relay {
 async fn deferred_answer_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Deferring { pending: None })
         .await
         .expect("deferring init is infallible");
@@ -96,7 +96,7 @@ async fn deferred_answer_roundtrip() {
 async fn whole_message_passthrough() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Deferring { pending: None })
         .await
         .expect("deferring init is infallible");
@@ -115,13 +115,13 @@ async fn whole_message_passthrough() {
 async fn envelope_forwarding_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let target = ActorBuilder::default()
+    let target = ActorLauncher::default()
         .spawn_ready(&spawner, Defaulted { value: 7 })
         .await
         .expect("defaulted init is infallible")
         .erase_type();
 
-    let relay = ActorBuilder::default()
+    let relay = ActorLauncher::default()
         .spawn_ready(&spawner, Relay { target })
         .await
         .expect("relay init is infallible");

@@ -8,7 +8,7 @@ use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::template::ActorTemplate;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorBuilder;
+use factories_actor::spawn::ActorLauncher;
 
 use crate::actor::CustomError;
 use crate::util::assert_type_eq;
@@ -69,7 +69,7 @@ fn explicit_keys_override_template_members() {
 async fn templated_actor_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Templated { total: 0 })
         .await
         .expect("templated init is infallible");

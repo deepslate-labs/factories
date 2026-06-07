@@ -7,7 +7,7 @@ use factories_actor::actor::handle::ActorHandle;
 use factories_actor::message::Message;
 use factories_actor::message::envelope::MessageEnvelope;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorBuilder;
+use factories_actor::spawn::ActorLauncher;
 
 use crate::actor::{Customized, Defaulted, Get};
 use crate::util::assert_type_eq;
@@ -81,7 +81,7 @@ fn generated_message_shapes() {
 async fn method_handlers_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Customized { hits: 0 })
         .await
         .expect("customized init is infallible");
@@ -107,7 +107,7 @@ async fn method_handlers_roundtrip() {
 async fn method_handlers_register_dynamically() {
     let spawner = TokioTaskSpawner::current();
 
-    let typed = ActorBuilder::default()
+    let typed = ActorLauncher::default()
         .spawn_ready(&spawner, Defaulted { value: 7 })
         .await
         .expect("defaulted init is infallible");

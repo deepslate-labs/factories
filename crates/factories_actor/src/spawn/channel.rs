@@ -4,7 +4,7 @@ use crate::actor::dispatch::DispatchedActorMessage;
 /// A channel that can be constructed from options as part of generic actor assembly.
 ///
 /// This is the assembly-side contract for channels: anything implementing it can
-/// be used by [`crate::spawn::ActorBuilder`]. Channels that cannot (or do not want
+/// be used by [`crate::spawn::ActorLauncher`]. Channels that cannot (or do not want
 /// to) participate in generic assembly only implement [`ActorChannel`] and get
 /// wired up by hand.
 pub trait CreatableChannel: ActorChannel + Sized {

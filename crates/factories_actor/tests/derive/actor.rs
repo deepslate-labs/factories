@@ -13,7 +13,7 @@ use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioTaskSpawner};
-use factories_actor::spawn::ActorBuilder;
+use factories_actor::spawn::ActorLauncher;
 
 use crate::util::assert_type_eq;
 
@@ -141,7 +141,7 @@ fn rtti_names() {
 async fn derived_default_kit_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Defaulted { value: 7 })
         .await
         .expect("defaulted init is infallible");
@@ -153,7 +153,7 @@ async fn derived_default_kit_roundtrip() {
 async fn derived_custom_kit_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Customized { hits: 0 })
         .await
         .expect("customized init is infallible");

@@ -18,7 +18,7 @@ use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::{
-    ActorBuilder, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
+    ActorLauncher, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
 };
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
 
@@ -169,7 +169,7 @@ impl MessageHandler<NotSendableMsg> for Greeter {
 async fn builder_spawn_tell_ask_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default().spawn(
+    let handle = ActorLauncher::default().spawn(
         &spawner,
         GreeterInit {
             greeting: "Hello".into(),
@@ -198,7 +198,7 @@ async fn builder_spawn_tell_ask_roundtrip() {
 async fn spawn_ready_ok() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(
             &spawner,
             GreeterInit {
@@ -219,7 +219,7 @@ async fn init_closure_constructs_on_the_loop() {
     // The closure (captures = `Send` args) crosses to the actor task, the
     // (async) construction runs there.
     let greeting = "Servus".to_string();
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, || async move {
             tokio::task::yield_now().await;
             Ok(Greeter { greeting })
@@ -240,7 +240,7 @@ async fn init_closure_constructs_on_the_loop() {
 async fn spawn_ready_init_failure() {
     let spawner = TokioTaskSpawner::current();
 
-    let result = ActorBuilder::default()
+    let result = ActorLauncher::default()
         .spawn_ready(
             &spawner,
             GreeterInit {
@@ -257,7 +257,7 @@ async fn spawn_ready_init_failure() {
 async fn sends_after_init_failure_report_dead() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default().spawn(
+    let handle = ActorLauncher::default().spawn(
         &spawner,
         GreeterInit {
             greeting: "Hi".into(),
@@ -286,7 +286,7 @@ async fn sends_after_init_failure_report_dead() {
 async fn non_send_message_rejected_at_channel() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(
             &spawner,
             GreeterInit {
@@ -506,7 +506,7 @@ async fn custom_loop_without_assembly_contract() {
 async fn lifecycle_dead_after_handle_dropped() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(
             &spawner,
             GreeterInit {
@@ -581,7 +581,7 @@ impl MessageHandler<Bump> for Tally {
 async fn sequential_loop_with_unguarded_lock() {
     let spawner = TokioTaskSpawner::current();
 
-    let handle = ActorBuilder::default()
+    let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Tally { total: 0 })
         .await
         .expect("tally init is infallible");

@@ -19,7 +19,7 @@ use factories_actor::runtime::kanal::SimpleKanalActorChannel;
 use factories_actor::runtime::lock::{Exclusive, Shared};
 use factories_actor::runtime::registry::{RegistryBinder, dispatch_registry};
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioRwLock, TokioTaskSpawner};
-use factories_actor::spawn::ActorBuilder;
+use factories_actor::spawn::ActorLauncher;
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
 
 // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ impl MessageHandler<Unregistered> for Calc {
 async fn spawn_calc(value: u32) -> factories_actor::actor::handle::TypedActorHandle<Calc> {
     let spawner = TokioTaskSpawner::current();
 
-    ActorBuilder::default()
+    ActorLauncher::default()
         .spawn_ready(&spawner, Calc { value })
         .await
         .expect("calc init is infallible")
@@ -190,7 +190,7 @@ async fn spawn_calc(value: u32) -> factories_actor::actor::handle::TypedActorHan
 async fn spawn_mirror() -> factories_actor::actor::handle::TypedActorHandle<Mirror> {
     let spawner = TokioTaskSpawner::current();
 
-    ActorBuilder::default()
+    ActorLauncher::default()
         .spawn_ready(&spawner, Mirror)
         .await
         .expect("mirror init is infallible")

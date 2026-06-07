@@ -4,13 +4,13 @@
 //! entirely and assemble from the primitives in [`crate::actor`] - the builder
 //! does nothing that cannot be done by hand with public API.
 
-mod builder;
+mod launcher;
 mod channel;
 mod init;
 mod run_loop;
 mod task;
 
-pub use builder::*;
+pub use launcher::*;
 pub use channel::*;
 pub use init::*;
 pub use run_loop::*;
