@@ -9,7 +9,7 @@ use factories_actor::message::envelope::MessageEnvelope;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::ActorLauncher;
 
-use crate::actor::{Customized, Defaulted, Get};
+use crate::actor::{Customized, CustomizedHandle, Defaulted, DefaultedHandle, Get};
 use crate::util::assert_type_eq;
 
 /// Existing message decomposed into handler parameters by field name.
@@ -101,6 +101,45 @@ async fn method_handlers_roundtrip() {
             .expect("ask"),
         6
     );
+}
+
+#[tokio::test]
+async fn generated_handle_methods_call_handlers() {
+    let spawner = TokioTaskSpawner::current();
+
+    let calc = ActorLauncher::default()
+        .spawn_ready(&spawner, Customized { hits: 0 })
+        .await
+        .expect("customized init is infallible");
+
+    // Unit handler, fire-and-forget via the generated method.
+    calc.touch().tell().await.expect("tell");
+
+    // Unit handler with an answer: bare `.await` is the ask.
+    assert_eq!(calc.hits_now().await.expect("ask"), 1);
+
+    // Decomposition handler: the method takes the whole existing message.
+    assert_eq!(
+        calc.add_both(AddBoth { left: 2, right: 3 })
+            .await
+            .expect("ask"),
+        6
+    );
+}
+
+#[tokio::test]
+async fn generated_handle_methods_mirror_field_params() {
+    let spawner = TokioTaskSpawner::current();
+
+    let calc = ActorLauncher::default()
+        .spawn_ready(&spawner, Defaulted { value: 7 })
+        .await
+        .expect("defaulted init is infallible");
+
+    // Field params become method arguments; the message is built internally.
+    calc.add(5).tell().await.expect("tell");
+
+    assert_eq!(calc.probe().await.expect("ask"), 12);
 }
 
 #[tokio::test]

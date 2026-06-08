@@ -1,6 +1,8 @@
 use crate::actor::channel::{
     ActorChannel, ActorChannelSendError, ActorChannelSendable, DynActorChannelSendable,
 };
+#[cfg(feature = "tokio-answer")]
+use crate::actor::channel::ActorChannelSendResult;
 use crate::actor::dispatch::{DispatchedActorMessage, DispatchedActorMessageContext};
 use crate::actor::identity::{ActorIdentity, AnyActorIdentity};
 use crate::actor::rtti::ActorRtti;
@@ -13,19 +15,32 @@ use crate::message::envelope::MessageEnvelope;
 use crate::message::rtti::MessageRtti;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+#[cfg(feature = "tokio-answer")]
+use core::future::{Future, IntoFuture};
 use core::marker::PhantomData;
 use thiserror::Error;
 
-#[derive(Debug)]
-pub struct TypedActorHandle<A: Actor>(Arc<ActorIdentity<A>>);
+pub struct TypedActorHandle<A: Actor + ?Sized>(Arc<ActorIdentity<A>>);
 
-// Manual impl so that the handle stays clonable even when A: !Clone
-impl<A: Actor> Clone for TypedActorHandle<A> {
+// Manual impls so the handle stays clonable / debuggable even when `A: !Clone`,
+// and works for unsized `A` (the handle only holds `A`'s associated types).
+impl<A: Actor + ?Sized> Clone for TypedActorHandle<A> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
+impl<A: Actor + ?Sized> core::fmt::Debug for TypedActorHandle<A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("TypedActorHandle")
+            .field(&self.0.rtti.name())
+            .finish()
+    }
+}
+
+// Methods stay `Sized`: most need it (the unsize-cast in `erase_type`, the
+// `PreparedCall` built by `call`). Only the type itself is `?Sized`, which is
+// all that `Actor::TypedHandle`'s `From<TypedActorHandle<Self>>` bound requires.
 impl<A: Actor> TypedActorHandle<A> {
     /// Assemble an actor handle from its parts.
     ///
@@ -118,6 +133,26 @@ impl<A: Actor> TypedActorHandle<A> {
             _data: PhantomData,
         }
     }
+
+    /// Prepare a typed call to this actor.
+    ///
+    /// The returned [`MessageCall`] must be used. See its documentation
+    /// for how to choose the form of communication.
+    #[cfg(feature = "tokio-answer")]
+    pub fn call<M: Message>(
+        &self,
+        message: M,
+    ) -> MessageCall<impl Calling<Output = Result<M::Answer, AskError>> + use<'_, A, M>>
+    where
+        A: MessageHandler<M>,
+    {
+        let handle = self;
+        MessageCall(PreparedCall {
+            handle,
+            message,
+            ask_gen: move |message: M| handle.ask(message).exchange(),
+        })
+    }
 }
 
 pub struct AskSendable<'a, M: Message, S: ActorChannelSendable<'a>> {
@@ -152,6 +187,143 @@ pub enum AskError {
 
     #[error("no reply received")]
     NoReply,
+}
+
+/// A prepared call to an actor that has not yet been dispatched.
+///
+/// Built by [`TypedActorHandle::call`] and by the generated typed-handle
+/// methods.
+///
+/// The form of communication is encoded via this struct:
+/// - `.await` performs an ask and yields the answer,
+/// - [`tell`](Self::tell) sends without awaiting a reply,
+/// - [`blocking_tell`](Self::blocking_tell) / [`blocking_ask`](Self::blocking_ask)
+///   do the same off an async runtime.
+#[cfg(feature = "tokio-answer")]
+#[must_use = "a MessageCall does nothing until it is awaited, told, or blocked on"]
+pub struct MessageCall<T>(T);
+
+#[cfg(feature = "tokio-answer")]
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// The prepared-call operations a [`MessageCall`] forwards to.
+///
+/// Sealed - implemented only by the framework's prepared-call type. The
+/// [`IntoFuture`] supertrait is the trick that keeps the ask unboxed: the
+/// channel's future is unnameable, so it travels as this type's
+/// [`IntoFuture::IntoFuture`] and the surface [`MessageCall`] just relays it.
+#[cfg(feature = "tokio-answer")]
+#[allow(private_bounds)]
+pub trait Calling: sealed::Sealed + IntoFuture {
+    /// Sends the message and waits for the reply.
+    fn ask(self) -> <Self as IntoFuture>::IntoFuture;
+
+    /// Send the message without awaiting a reply.
+    fn tell(self) -> impl Future<Output = ActorChannelSendResult>;
+
+    /// Send the message without awaiting a reply, blocking the thread.
+    fn blocking_tell(self) -> ActorChannelSendResult;
+
+    /// Perform the ask exchange, blocking the thread.
+    fn blocking_ask(self) -> <Self as IntoFuture>::Output;
+}
+
+/// The inner prepared call: handle + message + a generator for the ask future.
+///
+/// The generator exists solely to give the otherwise-unnameable ask future a
+/// name (the closure's return type), which is what lets [`MessageCall`] be
+/// awaited without boxing. `tell`/`blocking_*` build their own differently
+/// shaped sends from the retained handle and message.
+#[cfg(feature = "tokio-answer")]
+struct PreparedCall<'a, A: Actor, M: Message, C> {
+    handle: &'a TypedActorHandle<A>,
+    message: M,
+    ask_gen: C,
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<'a, A, M, C, Fut> IntoFuture for PreparedCall<'a, A, M, C>
+where
+    A: Actor + MessageHandler<M>,
+    M: Message,
+    C: FnOnce(M) -> Fut,
+    Fut: Future<Output = Result<M::Answer, AskError>> + 'a,
+{
+    type Output = Result<M::Answer, AskError>;
+    type IntoFuture = Fut;
+
+    fn into_future(self) -> Fut {
+        (self.ask_gen)(self.message)
+    }
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<A: Actor, M: Message, C> sealed::Sealed for PreparedCall<'_, A, M, C> {}
+
+#[cfg(feature = "tokio-answer")]
+impl<'a, A, M, C, Fut> Calling for PreparedCall<'a, A, M, C>
+where
+    A: Actor + MessageHandler<M>,
+    M: Message,
+    C: FnOnce(M) -> Fut,
+    Fut: Future<Output = Result<M::Answer, AskError>> + 'a,
+{
+    fn ask(self) -> <Self as IntoFuture>::IntoFuture {
+        self.into_future()
+    }
+
+    fn tell(self) -> impl Future<Output = ActorChannelSendResult> {
+        self.handle.tell(self.message).send()
+    }
+
+    fn blocking_tell(self) -> ActorChannelSendResult {
+        self.handle.tell(self.message).blocking_send()
+    }
+
+    fn blocking_ask(self) -> Result<M::Answer, AskError> {
+        self.handle.ask(self.message).blocking_exchange()
+    }
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<T: IntoFuture> IntoFuture for MessageCall<T> {
+    type Output = T::Output;
+    type IntoFuture = T::IntoFuture;
+
+    fn into_future(self) -> T::IntoFuture {
+        self.0.into_future()
+    }
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<T: Calling> MessageCall<T> {
+    /// Wrap a prepared call. Hand-written typed handles build their inner call
+    /// with [`TypedActorHandle::call`] and wrap it here.
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+
+    /// Sends the message and awaits the reply.
+    pub fn ask(self) -> impl Future<Output = <T as IntoFuture>::Output> {
+        self.0.into_future()
+    }
+
+    /// Send the message without awaiting a reply.
+    pub fn tell(self) -> impl Future<Output = ActorChannelSendResult> {
+        self.0.tell()
+    }
+
+    /// Send the message without awaiting a reply, blocking the thread.
+    pub fn blocking_tell(self) -> ActorChannelSendResult {
+        self.0.blocking_tell()
+    }
+
+    /// Perform the ask exchange, blocking the thread.
+    pub fn blocking_ask(self) -> <T as IntoFuture>::Output {
+        self.0.blocking_ask()
+    }
 }
 
 #[derive(Debug, Clone)]

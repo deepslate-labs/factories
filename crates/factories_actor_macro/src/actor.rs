@@ -1,5 +1,5 @@
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{DeriveInput, LitStr, Type};
 
 use crate::util;
@@ -94,10 +94,67 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let run_loop = util::value_or_default(config.run_loop, run_loop_default);
     let rtti_name = util::rtti_name(config.name, ident);
 
+    // The generated typed-handle newtype. Lives at module scope (not inside the
+    // `const _` block) so it is nameable, and inherits the actor's visibility.
+    // It is the actor's `TypedHandle`, and `#[messages]` adds the per-message
+    // methods to it as inherent impls.
+    let vis = &input.vis;
+    let handle_ident = format_ident!("{}Handle", ident);
+    let handle_ty = quote!(::factories_actor::actor::handle::TypedActorHandle<#ident>);
+    let handle_doc = format!(
+        "Typed handle for the [`{ident}`] actor, returned when it is spawned.\n\n\
+         Derefs to [`TypedActorHandle`](::factories_actor::actor::handle::TypedActorHandle); \
+         the per-message methods are added by `#[messages]`."
+    );
+
     // The `unsafe impl` is sound by construction: the RTTI and the impl are
     // emitted for the same type token in one expansion. (If diagnostics were
     // emitted above, proc_macro_error discards this output.)
     quote! {
+        #[doc = #handle_doc]
+        #[derive(::core::clone::Clone, ::core::fmt::Debug)]
+        #vis struct #handle_ident(#handle_ty);
+
+        impl ::core::convert::From<#handle_ty> for #handle_ident {
+            fn from(handle: #handle_ty) -> Self {
+                Self(handle)
+            }
+        }
+
+        impl ::core::convert::From<#handle_ident> for #handle_ty {
+            fn from(handle: #handle_ident) -> Self {
+                handle.0
+            }
+        }
+
+        impl ::core::ops::Deref for #handle_ident {
+            type Target = #handle_ty;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl #handle_ident {
+            /// Type-erase into a shared untyped handle (forwards to
+            /// [`TypedActorHandle::erase_type`](::factories_actor::actor::handle::TypedActorHandle::erase_type)).
+            pub fn erase_type(self) -> ::factories_actor::actor::handle::AnyActorHandle
+            where
+                <#ident as ::factories_actor::actor::Actor>::Channel:
+                    ::core::marker::Send + ::core::marker::Sync,
+                <#ident as ::factories_actor::actor::Actor>::Error:
+                    ::core::marker::Send + ::core::marker::Sync,
+            {
+                self.0.erase_type()
+            }
+
+            /// Type-erase into a local untyped handle (forwards to
+            /// [`TypedActorHandle::erase_type_local`](::factories_actor::actor::handle::TypedActorHandle::erase_type_local)).
+            pub fn erase_type_local(self) -> ::factories_actor::actor::handle::AnyLocalActorHandle {
+                self.0.erase_type_local()
+            }
+        }
+
         const _: () = {
             ::factories_actor::declare_actor_rtti!(__DERIVED_ACTOR_RTTI, #ident, #rtti_name);
 
@@ -110,6 +167,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 type RuntimeBinder = #binder;
                 type LockStrategy = #lock;
                 type RunLoop = #run_loop;
+                type TypedHandle = #handle_ident;
             }
         };
     }

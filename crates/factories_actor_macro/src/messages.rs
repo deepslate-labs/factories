@@ -1,9 +1,44 @@
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::spanned::Spanned;
-use syn::{Attribute, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Pat, ReturnType, Type};
+use syn::{
+    Attribute, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Pat, PathArguments, ReturnType,
+    Type,
+};
 
 use crate::util;
+
+/// What a single handler expands to: the additive message machinery, plus the
+/// typed-handle method that forwards to it.
+struct HandlerExpansion {
+    /// Message declaration (if generated), `MessageHandler` impl, registration.
+    items: TokenStream,
+    /// The method added to the actor's typed handle.
+    method: TokenStream,
+}
+
+/// Derive the typed-handle type from the impl's self type: `Customized` ->
+/// `CustomizedHandle`, matching the name the derive generates. Returns `None`
+/// (after emitting a diagnostic) for self types that are not a plain path.
+fn handle_type(self_ty: &Type) -> Option<TokenStream> {
+    let Type::Path(type_path) = self_ty else {
+        proc_macro_error::emit_error!(
+            self_ty.span(),
+            "#[messages] needs a named type to derive the typed handle"
+        );
+        return None;
+    };
+
+    let mut path = type_path.path.clone();
+    let last = path
+        .segments
+        .last_mut()
+        .expect("a type path has at least one segment");
+    last.ident = format_ident!("{}Handle", last.ident);
+    last.arguments = PathArguments::None;
+
+    Some(quote!(#path))
+}
 
 /// Parsed `#[handler(...)]` configuration.
 #[derive(Default)]
@@ -121,15 +156,35 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
 
     let self_ty = &input.self_ty;
     let mut generated = TokenStream::new();
+    let mut methods = Vec::new();
     for (function, markers) in &handlers {
-        generated.extend(expand_handler(self_ty, function, markers));
+        if let Some(expansion) = expand_handler(self_ty, function, markers) {
+            generated.extend(expansion.items);
+            methods.push(expansion.method);
+        }
     }
+
+    // The typed-handle methods forward to the generated messages. They live on
+    // the derive's handle newtype and are gated behind `tokio-answer` (via the
+    // library macro) because `MessageCall` is - feature-blind, like everything
+    // else this macro emits.
+    let typed_handle_methods = match handle_type(self_ty) {
+        Some(handle_ty) if !methods.is_empty() => quote! {
+            ::factories_actor::typed_handle_methods_if_enabled! {
+                impl #handle_ty {
+                    #(#methods)*
+                }
+            }
+        },
+        _ => TokenStream::new(),
+    };
 
     // The impl block is re-emitted unchanged (markers stripped): handler
     // methods stay plain methods, the message machinery is purely additive.
     quote! {
         #input
         #generated
+        #typed_handle_methods
     }
 }
 
@@ -148,7 +203,7 @@ fn expand_handler(
     self_ty: &Type,
     function: &ImplItemFn,
     markers: &[Attribute],
-) -> Option<TokenStream> {
+) -> Option<HandlerExpansion> {
     let mut config = HandlerConfig::default();
     for attr in markers {
         // Bare `#[handler]` has no keys to parse.
@@ -184,9 +239,7 @@ fn expand_handler(
 
                 Ok(())
             } else {
-                Err(meta.error(
-                    "unknown key, expected one of `message`, `answer`, `die_on_err`",
-                ))
+                Err(meta.error("unknown key, expected one of `message`, `answer`, `die_on_err`"))
             }
         });
 
@@ -224,10 +277,7 @@ fn expand_handler(
     };
 
     if receiver.reference.is_none() || receiver.colon_token.is_some() {
-        proc_macro_error::emit_error!(
-            receiver.span(),
-            "handlers must take `&self` or `&mut self`"
-        );
+        proc_macro_error::emit_error!(receiver.span(), "handlers must take `&self` or `&mut self`");
         return None;
     }
 
@@ -457,9 +507,7 @@ fn expand_handler(
             let declaration = if fields.is_empty() {
                 quote! { #vis struct #message_ident; }
             } else {
-                let struct_fields = fields
-                    .iter()
-                    .map(|(ident, ty)| quote!(pub #ident: #ty));
+                let struct_fields = fields.iter().map(|(ident, ty)| quote!(pub #ident: #ty));
                 quote! { #vis struct #message_ident { #(#struct_fields,)* } }
             };
 
@@ -592,7 +640,7 @@ fn expand_handler(
         }
     };
 
-    Some(quote! {
+    let items = quote! {
         #message_decl
 
         impl ::factories_actor::actor::MessageHandler<#message_ty> for #self_ty {
@@ -612,7 +660,46 @@ fn expand_handler(
         }
 
         ::factories_actor::register_dynamic_handler_if_enabled!(#self_ty, #message_ty);
-    })
+    };
+
+    // The typed-handle method forwarding to this message. Caller-facing inputs
+    // are the field params (or the whole message for decomposition/`#[message]`);
+    // markers (`#[answer]`/`#[envelope]`/`#[context]`) are handler-internal and
+    // never surface here. The answer is uniformly the message's own answer type.
+    let vis = &function.vis;
+    let method_answer = quote! {
+        ::core::result::Result<
+            <#message_ty as ::factories_actor::message::Message>::Answer,
+            ::factories_actor::actor::handle::AskError,
+        >
+    };
+
+    let (method_args, construct): (Vec<TokenStream>, TokenStream) =
+        if config.message.is_some() || message_param.is_some() {
+            (vec![quote!(message: #message_ty)], quote!(message))
+        } else if fields.is_empty() {
+            (Vec::new(), quote!(#message_ty))
+        } else {
+            let args = fields
+                .iter()
+                .map(|(ident, ty)| quote!(#ident: #ty))
+                .collect();
+            let names = fields.iter().map(|(ident, _)| *ident);
+            (args, quote!(#message_ty { #(#names),* }))
+        };
+
+    let method = quote! {
+        #vis fn #fn_ident(
+            &self,
+            #(#method_args),*
+        ) -> ::factories_actor::actor::handle::MessageCall<
+            impl ::factories_actor::actor::handle::Calling<Output = #method_answer> + use<'_>,
+        > {
+            self.call(#construct)
+        }
+    };
+
+    Some(HandlerExpansion { items, method })
 }
 
 /// `do_something` -> `DoSomething`. The message type inherits the fn ident's

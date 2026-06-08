@@ -46,6 +46,9 @@ pub unsafe trait Actor: 'static {
 
     /// The run loop that is used to drive this actor.
     type RunLoop: ActorRunLoop<Self>;
+
+    /// The typed handle returned when this actor is spawned.
+    type TypedHandle: From<handle::TypedActorHandle<Self>>;
 }
 
 /// Actor initialization protocol: the `Send` boundary of actor construction.

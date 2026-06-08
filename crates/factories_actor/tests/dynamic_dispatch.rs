@@ -7,7 +7,7 @@
 ))]
 
 use factories_actor::actor::dispatch::StaticDispatcher;
-use factories_actor::actor::handle::ActorHandle;
+use factories_actor::actor::handle::{ActorHandle, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::{Actor, MessageHandler, MessageHandlerContext};
 use factories_actor::message::Message;
@@ -42,6 +42,7 @@ unsafe impl Actor for Calc {
     type RuntimeBinder = RegistryBinder<Calc>;
     type LockStrategy = TokioMutexLock<Calc>;
     type RunLoop = ConcurrentRunLoop<Calc>;
+    type TypedHandle = TypedActorHandle<Self>;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ unsafe impl Actor for Mirror {
     type RuntimeBinder = RegistryBinder<Mirror>;
     type LockStrategy = TokioRwLock<Mirror>;
     type RunLoop = ConcurrentRunLoop<Mirror>;
+    type TypedHandle = TypedActorHandle<Self>;
 }
 
 // -- Messages -------------------------------------------------------------------
@@ -178,7 +180,7 @@ impl MessageHandler<Unregistered> for Calc {
 
 // -- Helpers --------------------------------------------------------------------
 
-async fn spawn_calc(value: u32) -> factories_actor::actor::handle::TypedActorHandle<Calc> {
+async fn spawn_calc(value: u32) -> TypedActorHandle<Calc> {
     let spawner = TokioTaskSpawner::current();
 
     ActorLauncher::default()
@@ -187,7 +189,7 @@ async fn spawn_calc(value: u32) -> factories_actor::actor::handle::TypedActorHan
         .expect("calc init is infallible")
 }
 
-async fn spawn_mirror() -> factories_actor::actor::handle::TypedActorHandle<Mirror> {
+async fn spawn_mirror() -> TypedActorHandle<Mirror> {
     let spawner = TokioTaskSpawner::current();
 
     ActorLauncher::default()

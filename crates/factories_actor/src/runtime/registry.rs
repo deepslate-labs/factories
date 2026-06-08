@@ -461,6 +461,7 @@ mod tests {
     };
     use crate::message::envelope::MessageEnvelope;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use crate::actor::handle::TypedActorHandle;
 
     struct UniqueMsg;
     crate::declare_message!(UniqueMsg, ());
@@ -580,6 +581,7 @@ mod tests {
         type RuntimeBinder = StaticOnlyBinder;
         type LockStrategy = TableActorLock;
         type RunLoop = TableActorLoop;
+        type TypedHandle = TypedActorHandle<Self>;
     }
 
     #[test]

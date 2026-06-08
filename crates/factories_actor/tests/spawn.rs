@@ -6,6 +6,7 @@
 
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
 use factories_actor::actor::dispatch::{AssertSend, StaticDispatcher};
+use factories_actor::actor::handle::{AskError, Calling, MessageCall, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
 use factories_actor::actor::{
@@ -21,7 +22,6 @@ use factories_actor::spawn::{
     ActorLauncher, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
 };
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
-
 // ---------------------------------------------------------------------------
 // Test actor: Greeter - written fully by hand. This is the manual path the
 // future macro layer will generate; if writing this gets painful, the
@@ -71,6 +71,7 @@ unsafe impl Actor for Greeter {
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = GreeterLock;
     type RunLoop = ConcurrentRunLoop<Greeter>;
+    type TypedHandle = TypedActorHandle<Self>;
 }
 
 struct GreeterInit {
@@ -312,6 +313,103 @@ async fn non_send_message_rejected_at_channel() {
     );
 }
 
+// -- MessageCall vocabulary: handle.call(msg).await / .tell() -------------------
+
+#[tokio::test]
+async fn call_await_performs_ask() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default().spawn(
+        &spawner,
+        GreeterInit {
+            greeting: "Hello".into(),
+            fail: false,
+        },
+    );
+
+    // Bare `.await` on a prepared call is an ask: it returns the answer.
+    let reply = handle
+        .call(Greet { name: "Max".into() })
+        .await
+        .expect("ask");
+
+    assert_eq!(reply, "Hello Max");
+}
+
+#[tokio::test]
+async fn call_tell_is_fire_and_forget() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default().spawn(
+        &spawner,
+        GreeterInit {
+            greeting: "Hello".into(),
+            fail: false,
+        },
+    );
+
+    // `.tell()` sends without awaiting a reply; its effect is observed by a
+    // following ask.
+    handle
+        .call(SetGreeting {
+            greeting: "Servus".into(),
+        })
+        .tell()
+        .await
+        .expect("tell");
+
+    let reply = handle
+        .call(Greet { name: "Max".into() })
+        .await
+        .expect("ask");
+
+    assert_eq!(reply, "Servus Max");
+}
+
+// A typed handle written fully by hand, reusing the MessageCall brick. This is
+// what the macro layer will generate; if spelling the return type by hand is
+// painful, the brick is wrong.
+struct GreeterHandle(TypedActorHandle<Greeter>);
+
+impl GreeterHandle {
+    fn greet(
+        &self,
+        name: String,
+    ) -> MessageCall<impl Calling<Output = Result<String, AskError>> + use<'_>> {
+        self.0.call(Greet { name })
+    }
+
+    fn set_greeting(
+        &self,
+        greeting: String,
+    ) -> MessageCall<impl Calling<Output = Result<(), AskError>> + use<'_>> {
+        self.0.call(SetGreeting { greeting })
+    }
+}
+
+#[tokio::test]
+async fn manual_typed_handle_reuses_message_call() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = GreeterHandle(ActorLauncher::default().spawn(
+        &spawner,
+        GreeterInit {
+            greeting: "Hello".into(),
+            fail: false,
+        },
+    ));
+
+    handle
+        .set_greeting("Servus".into())
+        .tell()
+        .await
+        .expect("tell");
+
+    let reply = handle.greet("Max".into()).await.expect("ask");
+
+    assert_eq!(reply, "Servus Max");
+}
+
 // -- Layer-0 hand assembly (everything the builder does, by hand) ---------------
 
 #[tokio::test]
@@ -341,11 +439,7 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
     let _ = shared.attach_task(task);
 
     // Step 5: assemble the handle
-    let handle = factories_actor::actor::handle::TypedActorHandle::assemble(
-        channel,
-        StaticOnlyBinder,
-        shared,
-    );
+    let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
 
     let reply = handle
         .ask(Greet {
@@ -401,6 +495,7 @@ unsafe impl Actor for Counter {
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = CounterLock;
     type RunLoop = SequentialLoop;
+    type TypedHandle = TypedActorHandle<Self>;
 }
 
 #[derive(Debug)]
@@ -490,11 +585,7 @@ async fn custom_loop_without_assembly_contract() {
     });
     let _ = shared.attach_task(task);
 
-    let handle = factories_actor::actor::handle::TypedActorHandle::assemble(
-        channel,
-        StaticOnlyBinder,
-        shared,
-    );
+    let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
 
     assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 1);
     assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 2);
@@ -553,6 +644,7 @@ unsafe impl Actor for Tally {
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = UnguardedLock<Tally>;
     type RunLoop = SequentialRunLoop<Tally>;
+    type TypedHandle = TypedActorHandle<Self>;
 }
 
 #[derive(Debug)]

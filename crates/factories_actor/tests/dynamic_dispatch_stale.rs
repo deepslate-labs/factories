@@ -6,6 +6,7 @@
 
 use factories_actor::actor::channel::{ActorChannel, ActorChannelSendResult, ActorChannelSendable};
 use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
+use factories_actor::actor::handle::TypedActorHandle;
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::{
     AccessMode, Actor, ActorRunLoop, ActorRunLoopDispatchContext, ActorRuntimeBinder, LockStrategy,
@@ -18,7 +19,6 @@ use factories_actor::runtime::registry::{
     DYNAMIC_HANDLERS, DynamicHandlerRegistration, RegistryBinder, dispatch_registry,
 };
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
-
 // ---------------------------------------------------------------------------
 // Minimal actor: never spawned, only used to construct binders. The channel
 // and run loop are inert stand-ins.
@@ -93,6 +93,7 @@ unsafe impl Actor for StaleActor {
     type RuntimeBinder = RegistryBinder<StaleActor>;
     type LockStrategy = StaleLock;
     type RunLoop = StaleLoop;
+    type TypedHandle = TypedActorHandle<Self>;
 }
 
 // -- Messages -------------------------------------------------------------------

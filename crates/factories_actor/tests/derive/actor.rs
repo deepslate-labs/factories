@@ -150,6 +150,19 @@ async fn derived_default_kit_roundtrip() {
 }
 
 #[tokio::test]
+async fn spawn_returns_the_generated_typed_handle() {
+    let spawner = TokioTaskSpawner::current();
+    
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Defaulted { value: 9 })
+        .await
+        .expect("defaulted init is infallible");
+
+    // The newtype derefs to the full `TypedActorHandle` API.
+    assert_eq!(handle.ask(Get).exchange().await.expect("ask"), 9);
+}
+
+#[tokio::test]
 async fn derived_custom_kit_roundtrip() {
     let spawner = TokioTaskSpawner::current();
 

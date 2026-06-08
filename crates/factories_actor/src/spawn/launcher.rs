@@ -67,7 +67,46 @@ where
     /// Messages sent before init completes queue in the mailbox. If init fails,
     /// the error lands in the shared state, the mailbox closes and senders
     /// observe [`crate::actor::channel::ActorChannelSendError::ActorDead`].
-    pub fn spawn<I, M>(self, spawner: &impl ActorTaskSpawner, init: I) -> TypedActorHandle<A>
+    pub fn spawn<I, M>(self, spawner: &impl ActorTaskSpawner, init: I) -> A::TypedHandle
+    where
+        I: IntoActorInit<A, M>,
+        I::Init: Send + 'static,
+        <I::Init as ActorInit<A>>::Fut: Send,
+    {
+        self.assemble(spawner, init).into()
+    }
+
+    /// Spawn and wait until init has resolved.
+    ///
+    /// Returns the actor's init error if initialization failed. An actor that
+    /// ran and exited normally before this observed `Running` yields `Ok`.
+    pub async fn spawn_ready<I, M>(
+        self,
+        spawner: &impl ActorTaskSpawner,
+        init: I,
+    ) -> Result<A::TypedHandle, A::Error>
+    where
+        I: IntoActorInit<A, M>,
+        I::Init: Send + 'static,
+        <I::Init as ActorInit<A>>::Fut: Send,
+        A::Error: Clone,
+    {
+        // Lifecycle is observed on the bare handle (the `TypedHandle` type only
+        // promises `From`), and the conversion happens at the boundary.
+        let handle = self.assemble(spawner, init);
+
+        match handle.state().wait_leave_starting().await {
+            LifecycleState::Dead => match handle.state().get_error() {
+                Some(error) => Err(error.clone()),
+                None => Ok(handle.into()),
+            },
+            _ => Ok(handle.into()),
+        }
+    }
+
+    /// The raw layer-0 assembly, yielding the bare [`TypedActorHandle`] before
+    /// the [`TypedHandle`](Actor::TypedHandle) conversion that `spawn` applies.
+    fn assemble<I, M>(self, spawner: &impl ActorTaskSpawner, init: I) -> TypedActorHandle<A>
     where
         I: IntoActorInit<A, M>,
         I::Init: Send + 'static,
@@ -81,31 +120,5 @@ where
         let _ = shared.attach_task(task);
 
         TypedActorHandle::assemble(channel, self.binder, shared)
-    }
-
-    /// Spawn and wait until init has resolved.
-    ///
-    /// Returns the actor's init error if initialization failed. An actor that
-    /// ran and exited normally before this observed `Running` yields `Ok`.
-    pub async fn spawn_ready<I, M>(
-        self,
-        spawner: &impl ActorTaskSpawner,
-        init: I,
-    ) -> Result<TypedActorHandle<A>, A::Error>
-    where
-        I: IntoActorInit<A, M>,
-        I::Init: Send + 'static,
-        <I::Init as ActorInit<A>>::Fut: Send,
-        A::Error: Clone,
-    {
-        let handle = self.spawn(spawner, init);
-
-        match handle.state().wait_leave_starting().await {
-            LifecycleState::Dead => match handle.state().get_error() {
-                Some(error) => Err(error.clone()),
-                None => Ok(handle),
-            },
-            _ => Ok(handle),
-        }
     }
 }
