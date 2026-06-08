@@ -1,3 +1,4 @@
+use crate::actor::event::EventDriver;
 use crate::actor::handle::TypedActorHandle;
 use crate::actor::state::{LifecycleState, SharedActorState};
 use crate::actor::{Actor, ActorInit};
@@ -60,6 +61,7 @@ where
     A::Channel: CreatableChannel,
     A::RunLoop: SpawnableRunLoop<A>,
     A::Error: Send + Sync + 'static,
+    A::EventDriver: EventDriver<A, <A::Channel as CreatableChannel>::Mailbox>,
 {
     /// Assemble and fire. The initializer crosses into the spawned task, where
     /// [`ActorInit::init`] constructs the actor.

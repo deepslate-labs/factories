@@ -6,7 +6,7 @@
 
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
 use factories_actor::actor::dispatch::{AssertSend, DispatchedActorMessage, StaticDispatcher};
-use factories_actor::actor::event::{EventContext, EventDriver};
+use factories_actor::actor::event::{DefaultMailboxDriver, EventContext, EventDriver};
 use factories_actor::actor::handle::{AskError, Calling, MessageCall, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
@@ -74,6 +74,7 @@ unsafe impl Actor for Greeter {
     type RunLoop = ConcurrentRunLoop<Greeter>;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
 }
 
 struct GreeterInit {
@@ -499,6 +500,7 @@ unsafe impl Actor for Counter {
     type RunLoop = SequentialLoop;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
 }
 
 #[derive(Debug)]
@@ -649,6 +651,7 @@ unsafe impl Actor for Tally {
     type RunLoop = SequentialRunLoop<Tally>;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
 }
 
 #[derive(Debug)]
@@ -719,10 +722,7 @@ unsafe impl Actor for Ticker {
     type RunLoop = SequentialRunLoop<Ticker>;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = TickerShared;
-
-    fn select_event_driver(&self) -> impl EventDriver<Self> + use<> {
-        TickSource
-    }
+    type EventDriver = TickSource;
 }
 
 #[derive(Debug)]
@@ -777,20 +777,28 @@ impl MessageHandler<GetTotal> for Ticker {
 
 struct TickSource;
 
-impl EventDriver<Ticker> for TickSource {
-    fn next<'a, M>(
+impl From<&Ticker> for TickSource {
+    fn from(_actor: &Ticker) -> Self {
+        TickSource
+    }
+}
+
+impl<M: ActorMailbox> EventDriver<Ticker, M> for TickSource {
+    fn next<'a>(
         &'a mut self,
         cx: EventContext<'a, Ticker>,
         mailbox: &'a mut M,
-    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a
-    where
-        M: ActorMailbox + 'a,
-    {
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a {
         async move {
             // Drive our own source until the handlers have processed the budget,
             // reading the shared counter the `Tick` handler bumps. Don't even
             // poll the mailbox until then - the actor's lever against starvation.
-            if cx.extension().fired.load(core::sync::atomic::Ordering::Acquire) < TICK_BUDGET {
+            if cx
+                .extension()
+                .fired
+                .load(core::sync::atomic::Ordering::Acquire)
+                < TICK_BUDGET
+            {
                 return Some(cx.message(Tick));
             }
             // Budget drained: defer to the mailbox.
@@ -812,7 +820,10 @@ async fn event_source_produces_self_messages() {
     // shared counter) before it ever polls the mailbox, so the first query sees
     // every tick.
     let total = handle.ask(GetTotal).exchange().await.expect("ask");
-    assert_eq!(total, TICK_BUDGET, "event source should fire its whole budget");
+    assert_eq!(
+        total, TICK_BUDGET,
+        "event source should fire its whole budget"
+    );
 
     // No further ticks once the budget drained.
     let again = handle.ask(GetTotal).exchange().await.expect("ask");

@@ -7,6 +7,7 @@
 ))]
 
 use factories_actor::actor::dispatch::StaticDispatcher;
+use factories_actor::actor::event::DefaultMailboxDriver;
 use factories_actor::actor::handle::{ActorHandle, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::{Actor, MessageHandler, MessageHandlerContext};
@@ -21,7 +22,6 @@ use factories_actor::runtime::registry::{RegistryBinder, dispatch_registry};
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioRwLock, TokioTaskSpawner};
 use factories_actor::spawn::ActorLauncher;
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
-
 // ---------------------------------------------------------------------------
 // Calc: handles two unique messages (AddValue, GetValue), one shared message
 // (Describe) and one statically-only handled message (Unregistered).
@@ -44,6 +44,7 @@ unsafe impl Actor for Calc {
     type RunLoop = ConcurrentRunLoop<Calc>;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ unsafe impl Actor for Mirror {
     type RunLoop = ConcurrentRunLoop<Mirror>;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
 }
 
 // -- Messages -------------------------------------------------------------------

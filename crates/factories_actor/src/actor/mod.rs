@@ -52,19 +52,10 @@ pub unsafe trait Actor: 'static {
     type TypedHandle: From<handle::TypedActorHandle<Self>>;
 
     /// User-defined data woven into the actor's shared state.
-    ///
-    /// Lives in [`SharedActorState`](state::SharedActorState) - never behind the
-    /// actor lock - so message handlers and the
-    /// [`EventDriver`](event::EventDriver) can coordinate through it without lock
-    /// contention (atomics, an `AtomicWaker`, an `ArcSwap`, ...). Defaults to
-    /// `()` for actors that need none. `Default`-constructed at spawn.
     type SharedStateExtension: Default + Send + Sync;
 
-    /// Select this actor's event-source driver, called once before the run loop
-    /// starts (the actor is still owned, not yet behind the lock).
-    fn select_event_driver(&self) -> impl event::EventDriver<Self> + use<Self> {
-        event::DefaultDriver
-    }
+    /// The event-source driver multiplexed onto this actor's run loop.
+    type EventDriver: for<'a> From<&'a Self>;
 }
 
 /// Actor initialization protocol: the `Send` boundary of actor construction.

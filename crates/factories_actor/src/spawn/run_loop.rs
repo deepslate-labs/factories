@@ -1,6 +1,6 @@
+use crate::actor::event::EventDriver;
 use crate::actor::state::SharedActorState;
 use crate::actor::{Actor, ActorInit, ActorRunLoop};
-use crate::spawn::ActorMailbox;
 
 /// A run loop that can be constructed and driven as part of generic actor assembly.
 ///
@@ -25,14 +25,16 @@ where
     type Config: Send + 'static;
 
     /// Run the loop, constructing the actor with the given initializer.
-    fn run_with<I>(
+    fn run_with<I, MB>(
         config: Self::Config,
         init: I,
         shared: SharedActorState<A>,
-        mailbox: impl ActorMailbox + Send + 'static,
+        mailbox: MB,
     ) -> impl Future<Output = ()> + Send + 'static
     where
         I: ActorInit<A> + Send + 'static,
         I::Fut: Send,
+        MB: Send + 'static,
+        A::EventDriver: EventDriver<A, MB>,
         A: Sized;
 }

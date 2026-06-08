@@ -7,9 +7,6 @@
 //! poll the mailbox (race it against its own sources, prioritise one, or skip it
 //! to drain a backlog). Whatever it yields is dispatched exactly like a mailbox
 //! message, so the locking model is untouched.
-//!
-//! The driver is selected per actor at a concrete site (see
-//! [`Actor::select_event_driver`](crate::actor::Actor::select_event_driver)).
 
 use crate::actor::dispatch::{DispatchedActorMessage, DispatchedActorMessageContext};
 use crate::actor::state::SharedActorState;
@@ -22,41 +19,51 @@ use crate::spawn::ActorMailbox;
 use core::future::Future;
 
 /// An event source that drives an actor's run loop alongside (or instead of)
-/// the mailbox.
-pub trait EventDriver<A: Actor + ?Sized> {
+/// the mailbox of type `M`.
+///
+/// `M` is the run loop's message source; it is *not* required to be an
+/// [`ActorMailbox`] - that is the standard interface, and a driver that polls it
+/// asks for it in its own impl (`impl<A, M: ActorMailbox> EventDriver<A, M>`). A
+/// pure source that never touches the mailbox can be `impl<A, M> EventDriver<A,
+/// M>` and run under any loop, and a fully custom loop may use a completely
+/// different `M`.
+pub trait EventDriver<A: Actor + ?Sized, M> {
     /// Produce the next message to dispatch, or `None` to stop the loop.
     ///
-    /// The driver owns the mailbox for the turn: it may `mailbox.receive()`,
-    /// race that against its own futures, or ignore it entirely (e.g. when
-    /// shared state flags that its backlog must drain first - the actor's lever
-    /// against starvation). Touching the actor state is up to the driver, via
-    /// `cx`; the framework imposes no locking policy.
+    /// The driver owns the mailbox for the turn: it may receive from it, race
+    /// that against its own futures, or ignore it entirely (e.g. when shared
+    /// state flags that its backlog must drain first - the actor's lever against
+    /// starvation). Touching the actor state is up to the driver, via `cx`; the
+    /// framework imposes no locking policy.
     ///
     /// Cancel-safety is the driver's responsibility: any racing it does must
     /// keep in-flight progress in `self`, so a branch dropped when another wins
     /// can resume next turn.
-    fn next<'a, M>(
+    fn next<'a>(
         &'a mut self,
         cx: EventContext<'a, A>,
         mailbox: &'a mut M,
-    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a
-    where
-        M: ActorMailbox + 'a;
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a;
 }
 
 /// The default driver: pull straight from the mailbox.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct DefaultDriver;
+pub struct DefaultMailboxDriver;
 
-impl<A: Actor + ?Sized> EventDriver<A> for DefaultDriver {
-    fn next<'a, M>(
+// Built from any actor, ignoring it - so `type EventDriver = DefaultMailboxDriver`
+// satisfies the `From<&Self>` bound for every actor with no extra boilerplate.
+impl<A: ?Sized> From<&A> for DefaultMailboxDriver {
+    fn from(_actor: &A) -> Self {
+        Self
+    }
+}
+
+impl<A: Actor + ?Sized, M: ActorMailbox> EventDriver<A, M> for DefaultMailboxDriver {
+    fn next<'a>(
         &'a mut self,
         _cx: EventContext<'a, A>,
         mailbox: &'a mut M,
-    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a
-    where
-        M: ActorMailbox + 'a,
-    {
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a {
         mailbox.receive()
     }
 }
@@ -121,7 +128,7 @@ impl<'a, A: Actor + ?Sized> EventContext<'a, A> {
     }
 
     /// The actor's lock-free shared state extension
-    /// ([`Actor::SharedStateExtension`](crate::actor::Actor::SharedStateExtension)) -
+    /// ([`Actor::SharedStateExtension`]) -
     /// the coordination channel shared with message handlers.
     pub fn extension(&self) -> &'a A::SharedStateExtension {
         self.shared.extension()

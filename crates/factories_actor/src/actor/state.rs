@@ -177,7 +177,7 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
     }
 
     /// The actor's user-defined shared state extension
-    /// ([`Actor::SharedStateExtension`](crate::actor::Actor::SharedStateExtension)).
+    /// ([`Actor::SharedStateExtension`]).
     pub fn extension(&self) -> &A::SharedStateExtension {
         &self.inner.extension
     }

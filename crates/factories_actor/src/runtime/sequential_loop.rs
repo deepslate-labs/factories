@@ -2,7 +2,7 @@ use crate::actor::event::{DemandSendDriver, EventDriver};
 use crate::actor::state::SharedActorState;
 use crate::actor::{Actor, ActorRunLoop, SerializedDispatch, ThreadSafe};
 use crate::runtime::loop_support::{self, StandardDispatchContext, StandardLoop};
-use crate::spawn::{ActorMailbox, SpawnableRunLoop};
+use crate::spawn::SpawnableRunLoop;
 use core::fmt::{Debug, Formatter};
 
 /// Run loop that runs message handlers strictly sequentially.
@@ -29,8 +29,7 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
     /// dispatch - serialized, so the actor state needs no real lock.
     async fn run<D, M>(self, mut mailbox: M, mut driver: DemandSendDriver<D>)
     where
-        D: EventDriver<A>,
-        M: ActorMailbox + Send,
+        D: EventDriver<A, M>,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync,
     {
@@ -83,16 +82,18 @@ where
 {
     type Config = ();
 
-    fn run_with<I>(
+    fn run_with<I, MB>(
         _config: (),
         init: I,
         shared: SharedActorState<A>,
-        mailbox: impl ActorMailbox + Send + 'static,
+        mailbox: MB,
     ) -> impl Future<Output = ()> + Send + 'static
     where
         I: crate::actor::ActorInit<A> + Send + 'static,
         I::Fut: Send,
+        MB: Send + 'static,
+        A::EventDriver: EventDriver<A, MB>,
     {
-        loop_support::standard_run_with::<A, Self, I, _>(init, shared, mailbox)
+        loop_support::standard_run_with::<A, Self, I, MB>(init, shared, mailbox)
     }
 }

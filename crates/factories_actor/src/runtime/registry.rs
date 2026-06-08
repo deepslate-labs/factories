@@ -461,6 +461,7 @@ mod tests {
     };
     use crate::message::envelope::MessageEnvelope;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use crate::actor::event::DefaultMailboxDriver;
     use crate::actor::handle::TypedActorHandle;
 
     struct UniqueMsg;
@@ -583,6 +584,7 @@ mod tests {
         type RunLoop = TableActorLoop;
         type TypedHandle = TypedActorHandle<Self>;
         type SharedStateExtension = ();
+        type EventDriver = DefaultMailboxDriver;
     }
 
     #[test]

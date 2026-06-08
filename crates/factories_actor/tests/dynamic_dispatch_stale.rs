@@ -6,6 +6,7 @@
 
 use factories_actor::actor::channel::{ActorChannel, ActorChannelSendResult, ActorChannelSendable};
 use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
+use factories_actor::actor::event::DefaultMailboxDriver;
 use factories_actor::actor::handle::TypedActorHandle;
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::{
@@ -95,6 +96,7 @@ unsafe impl Actor for StaleActor {
     type RunLoop = StaleLoop;
     type TypedHandle = TypedActorHandle<Self>;
     type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
 }
 
 // -- Messages -------------------------------------------------------------------

@@ -245,6 +245,7 @@ mod tests {
     use crate::actor::rtti::ActorRtti;
     use crate::actor::{ActorRunLoop, ActorRunLoopDispatchContext, StaticOnlyBinder, ThreadLocal};
     use futures::FutureExt;
+    use crate::actor::event::DefaultMailboxDriver;
     use crate::actor::handle::TypedActorHandle;
     // Minimal actor whose run loop (unsafely) claims serialized dispatch. It is
     // never spawned; the tests only exercise the strategy directly.
@@ -308,6 +309,7 @@ mod tests {
         type RunLoop = LockActorLoop;
         type TypedHandle = TypedActorHandle<Self>;
         type SharedStateExtension = ();
+        type EventDriver = DefaultMailboxDriver;
     }
 
     fn acquire(lock: &UnguardedLock<LockActor>) -> UnguardedGuard<'_, LockActor> {

@@ -11,7 +11,6 @@ use crate::actor::dispatch::{AssertSend, BoxedHandlerFuture};
 use crate::actor::event::{DemandSendDriver, EventContext, EventDriver};
 use crate::actor::state::SharedActorState;
 use crate::actor::{Actor, ActorInit, ActorRunLoop, ActorRunLoopDispatchContext};
-use crate::spawn::ActorMailbox;
 use core::fmt::{Debug, Formatter};
 use core::future::Future;
 
@@ -57,8 +56,7 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         // (`'turn`) is released when this future completes - so a concurrent loop
         // can hold the resolved handler in a work set without pinning the driver.
         'ctx: 'turn,
-        D: EventDriver<A>,
-        M: ActorMailbox,
+        D: EventDriver<A, M>,
         A::RunLoop: ActorRunLoop<A, DispatchContext = Self>,
     {
         async move {
@@ -110,7 +108,8 @@ where
 /// [`next_dispatch`](StandardDispatchContext::next_dispatch) yields.
 ///
 /// Implementing this gets the whole spawn scaffolding for free via
-/// [`standard_run_with`] (which the loop's [`SpawnableRunLoop`] delegates to).
+/// [`standard_run_with`] (which the loop's
+/// [`SpawnableRunLoop`](crate::spawn::SpawnableRunLoop) delegates to).
 pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
     /// Assemble the loop from the actor's lock strategy and shared state.
     fn build(lock_strategy: A::LockStrategy, shared: SharedActorState<A>) -> Self;
@@ -120,8 +119,8 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
     /// [`StandardDispatchContext::next_dispatch`].
     fn run<D, M>(self, mailbox: M, driver: DemandSendDriver<D>) -> impl Future<Output = ()> + Send
     where
-        D: EventDriver<A>,
-        M: ActorMailbox + Send,
+        D: EventDriver<A, M>,
+        M: Send + 'static,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync;
 }
@@ -140,17 +139,19 @@ where
     L: StandardLoop<A>,
     I: ActorInit<A> + Send + 'static,
     I::Fut: Send,
-    M: ActorMailbox + Send + 'static,
+    A::EventDriver: EventDriver<A, M>,
     A::LockStrategy: Send + Sync,
     A::Error: Send + Sync + 'static,
+    M: Send + 'static
 {
     async move {
         // Loop exit, handler panic and task abort all transition to `Dead`.
         let _guard = shared.dead_on_drop();
 
         // Scope the (possibly `!Send`) actor so it is provably gone - moved into
-        // its lock - before the loop's first await. Its driver does not borrow it
-        // (`use<Self>`); the driver's `Send` is reclaimed by `DemandSendDriver`.
+        // its lock - before the loop's first await. The driver it yields is the
+        // named `A::EventDriver` (does not borrow it); its `Send` is reclaimed by
+        // `DemandSendDriver`.
         let lock_strategy;
         let driver;
         {
@@ -158,11 +159,13 @@ where
                 return;
             };
 
+            // Build the driver from the actor (seedable via its `From<&Actor>`
+            // impl), before the actor moves into its lock.
             // SAFETY: standard loops are `ThreadSafe`; the driver upholds that
             //         demand (the `#[event_source]` derive demand-checks the
             //         driver and its `next` future; a hand-written driver upholds
             //         it the same way).
-            driver = unsafe { DemandSendDriver::new(actor.select_event_driver()) };
+            driver = unsafe { DemandSendDriver::new(A::EventDriver::from(&actor)) };
             lock_strategy = actor.into();
         }
 

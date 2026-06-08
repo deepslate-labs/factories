@@ -16,6 +16,7 @@ struct ActorConfig {
     lock: Option<Type>,
     run_loop: Option<Type>,
     shared: Option<Type>,
+    event_driver: Option<Type>,
     name: Option<LitStr>,
 }
 
@@ -46,12 +47,15 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 util::set_value(&mut config.run_loop, &meta)
             } else if meta.path.is_ident("shared") {
                 util::set_value(&mut config.shared, &meta)
+            } else if meta.path.is_ident("event_driver") {
+                util::set_value(&mut config.event_driver, &meta)
             } else if meta.path.is_ident("name") {
                 util::set_value(&mut config.name, &meta)
             } else {
                 Err(meta.error(
                     "unknown key, expected one of \
-                     `template`, `channel`, `error`, `binder`, `lock`, `run_loop`, `shared`, `name`",
+                     `template`, `channel`, `error`, `binder`, `lock`, `run_loop`, `shared`, \
+                     `event_driver`, `name`",
                 ))
             }
         });
@@ -95,8 +99,13 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let binder = util::value_or_default(config.binder, binder_default);
     let lock = util::value_or_default(config.lock, lock_default);
     let run_loop = util::value_or_default(config.run_loop, run_loop_default);
-    // Not a template member: the shared-state extension defaults to `()`.
+    // Not template members: the shared-state extension defaults to `()`, the
+    // event driver to the plain mailbox-pulling `DefaultMailboxDriver`.
     let shared = util::value_or_default(config.shared, quote!(()));
+    let event_driver = util::value_or_default(
+        config.event_driver,
+        quote!(::factories_actor::actor::event::DefaultMailboxDriver),
+    );
     let rtti_name = util::rtti_name(config.name, ident);
 
     // The generated typed-handle newtype. Lives at module scope (not inside the
@@ -174,6 +183,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 type RunLoop = #run_loop;
                 type TypedHandle = #handle_ident;
                 type SharedStateExtension = #shared;
+                type EventDriver = #event_driver;
             }
         };
     }
