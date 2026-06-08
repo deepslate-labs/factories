@@ -302,7 +302,7 @@ impl<T: Calling> MessageCall<T> {
 
     /// Sends the message and awaits the reply.
     pub fn ask(self) -> impl Future<Output = <T as IntoFuture>::Output> {
-        self.0.into_future()
+        self.0.ask()
     }
 
     /// Send the message without awaiting a reply.
