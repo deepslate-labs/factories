@@ -1,8 +1,8 @@
+#[cfg(feature = "tokio-answer")]
+use crate::actor::channel::ActorChannelSendResult;
 use crate::actor::channel::{
     ActorChannel, ActorChannelSendError, ActorChannelSendable, DynActorChannelSendable,
 };
-#[cfg(feature = "tokio-answer")]
-use crate::actor::channel::ActorChannelSendResult;
 use crate::actor::dispatch::{DispatchedActorMessage, DispatchedActorMessageContext};
 use crate::actor::identity::{ActorIdentity, AnyActorIdentity};
 use crate::actor::rtti::ActorRtti;
@@ -32,16 +32,11 @@ impl<A: Actor + ?Sized> Clone for TypedActorHandle<A> {
 
 impl<A: Actor + ?Sized> core::fmt::Debug for TypedActorHandle<A> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple("TypedActorHandle")
-            .field(&self.0.rtti.name())
-            .finish()
+        f.debug_tuple("TypedActorHandle").field(&self.0).finish()
     }
 }
 
-// Methods stay `Sized`: most need it (the unsize-cast in `erase_type`, the
-// `PreparedCall` built by `call`). Only the type itself is `?Sized`, which is
-// all that `Actor::TypedHandle`'s `From<TypedActorHandle<Self>>` bound requires.
-impl<A: Actor> TypedActorHandle<A> {
+impl<A: Actor + ?Sized> TypedActorHandle<A> {
     /// Assemble an actor handle from its parts.
     ///
     /// This is the layer-0 entry point used by the actor builder internally and
@@ -237,7 +232,7 @@ pub trait Calling: sealed::Sealed + IntoFuture {
 /// awaited without boxing. `tell`/`blocking_*` build their own differently
 /// shaped sends from the retained handle and message.
 #[cfg(feature = "tokio-answer")]
-struct PreparedCall<'a, A: Actor, M: Message, C> {
+struct PreparedCall<'a, A: Actor + ?Sized, M: Message, C> {
     handle: &'a TypedActorHandle<A>,
     message: M,
     ask_gen: C,
@@ -246,7 +241,7 @@ struct PreparedCall<'a, A: Actor, M: Message, C> {
 #[cfg(feature = "tokio-answer")]
 impl<'a, A, M, C, Fut> IntoFuture for PreparedCall<'a, A, M, C>
 where
-    A: Actor + MessageHandler<M>,
+    A: Actor + MessageHandler<M> + ?Sized,
     M: Message,
     C: FnOnce(M) -> Fut,
     Fut: Future<Output = Result<M::Answer, AskError>> + 'a,
@@ -260,12 +255,12 @@ where
 }
 
 #[cfg(feature = "tokio-answer")]
-impl<A: Actor, M: Message, C> sealed::Sealed for PreparedCall<'_, A, M, C> {}
+impl<A: Actor + ?Sized, M: Message, C> sealed::Sealed for PreparedCall<'_, A, M, C> {}
 
 #[cfg(feature = "tokio-answer")]
 impl<'a, A, M, C, Fut> Calling for PreparedCall<'a, A, M, C>
 where
-    A: Actor + MessageHandler<M>,
+    A: Actor + MessageHandler<M> + ?Sized,
     M: Message,
     C: FnOnce(M) -> Fut,
     Fut: Future<Output = Result<M::Answer, AskError>> + 'a,
@@ -355,7 +350,7 @@ impl AnyLocalActorHandle {
     }
 }
 
-impl<A: Actor> From<TypedActorHandle<A>> for AnyLocalActorHandle
+impl<A: Actor + ?Sized> From<TypedActorHandle<A>> for AnyLocalActorHandle
 where
     A: 'static,
 {
@@ -382,7 +377,7 @@ impl AnyActorHandle {
     }
 }
 
-impl<A: Actor> From<TypedActorHandle<A>> for AnyActorHandle
+impl<A: Actor + ?Sized> From<TypedActorHandle<A>> for AnyActorHandle
 where
     A: 'static,
     A::Channel: Send + Sync,
@@ -408,7 +403,7 @@ trait ActorHandleBase {
     fn identity(&self) -> &Arc<Self::ActorIdentity>;
 }
 
-impl<A: Actor> ActorHandleBase for TypedActorHandle<A> {
+impl<A: Actor + ?Sized> ActorHandleBase for TypedActorHandle<A> {
     type ActorIdentity = ActorIdentity<A>;
 
     fn identity(&self) -> &Arc<Self::ActorIdentity> {

@@ -44,7 +44,7 @@ pub(crate) trait AnyActorIdentity: Debug {
     fn task(&self) -> Option<&ActorTaskHandle>;
 }
 
-impl<A: Actor> AnyActorIdentity for ActorIdentity<A> {
+impl<A: Actor + ?Sized> AnyActorIdentity for ActorIdentity<A> {
     fn rtti(&self) -> &'static ActorRtti {
         &self.rtti
     }
@@ -62,10 +62,10 @@ impl<A: Actor> AnyActorIdentity for ActorIdentity<A> {
     }
 }
 
-impl<A: Actor> Debug for ActorIdentity<A> {
+impl<A: Actor + ?Sized> Debug for ActorIdentity<A> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ActorIdentity")
-            .field("rtti", &(&raw const self.rtti).addr())
+            .field("rtti", &(&raw const self.rtti))
             .finish()
     }
 }
