@@ -11,6 +11,7 @@ use state::SharedActorState;
 
 pub mod channel;
 pub mod dispatch;
+pub mod event;
 pub mod handle;
 pub mod identity;
 pub mod rtti;
@@ -49,6 +50,21 @@ pub unsafe trait Actor: 'static {
 
     /// The typed handle returned when this actor is spawned.
     type TypedHandle: From<handle::TypedActorHandle<Self>>;
+
+    /// User-defined data woven into the actor's shared state.
+    ///
+    /// Lives in [`SharedActorState`](state::SharedActorState) - never behind the
+    /// actor lock - so message handlers and the
+    /// [`EventDriver`](event::EventDriver) can coordinate through it without lock
+    /// contention (atomics, an `AtomicWaker`, an `ArcSwap`, ...). Defaults to
+    /// `()` for actors that need none. `Default`-constructed at spawn.
+    type SharedStateExtension: Default + Send + Sync;
+
+    /// Select this actor's event-source driver, called once before the run loop
+    /// starts (the actor is still owned, not yet behind the lock).
+    fn select_event_driver(&self) -> impl event::EventDriver<Self> + use<Self> {
+        event::DefaultDriver
+    }
 }
 
 /// Actor initialization protocol: the `Send` boundary of actor construction.
@@ -366,6 +382,11 @@ impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
     /// The current lifecycle state of the actor.
     pub fn lifecycle(&self) -> state::LifecycleState {
         self.state.lifecycle()
+    }
+
+    /// The actor's lock-free shared state extension.
+    pub fn extension(&self) -> &'a A::SharedStateExtension {
+        self.state.extension()
     }
 }
 

@@ -15,6 +15,7 @@ struct ActorConfig {
     binder: Option<Type>,
     lock: Option<Type>,
     run_loop: Option<Type>,
+    shared: Option<Type>,
     name: Option<LitStr>,
 }
 
@@ -43,12 +44,14 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 util::set_value(&mut config.lock, &meta)
             } else if meta.path.is_ident("run_loop") {
                 util::set_value(&mut config.run_loop, &meta)
+            } else if meta.path.is_ident("shared") {
+                util::set_value(&mut config.shared, &meta)
             } else if meta.path.is_ident("name") {
                 util::set_value(&mut config.name, &meta)
             } else {
                 Err(meta.error(
                     "unknown key, expected one of \
-                     `template`, `channel`, `error`, `binder`, `lock`, `run_loop`, `name`",
+                     `template`, `channel`, `error`, `binder`, `lock`, `run_loop`, `shared`, `name`",
                 ))
             }
         });
@@ -92,6 +95,8 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let binder = util::value_or_default(config.binder, binder_default);
     let lock = util::value_or_default(config.lock, lock_default);
     let run_loop = util::value_or_default(config.run_loop, run_loop_default);
+    // Not a template member: the shared-state extension defaults to `()`.
+    let shared = util::value_or_default(config.shared, quote!(()));
     let rtti_name = util::rtti_name(config.name, ident);
 
     // The generated typed-handle newtype. Lives at module scope (not inside the
@@ -168,6 +173,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 type LockStrategy = #lock;
                 type RunLoop = #run_loop;
                 type TypedHandle = #handle_ident;
+                type SharedStateExtension = #shared;
             }
         };
     }

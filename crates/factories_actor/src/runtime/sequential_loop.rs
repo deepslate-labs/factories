@@ -1,4 +1,5 @@
 use crate::actor::dispatch::AssertSend;
+use crate::actor::event::{DemandSendDriver, EventContext, EventDriver};
 use crate::actor::state::SharedActorState;
 use crate::actor::{
     Actor, ActorRunLoop, ActorRunLoopDispatchContext, SerializedDispatch, ThreadSafe,
@@ -29,20 +30,40 @@ impl<A: Actor<RunLoop = Self> + ?Sized> SequentialRunLoop<A> {
         }
     }
 
-    /// Drive the loop until the mailbox closes or a handler fails the actor.
-    pub async fn run(self, mut mailbox: impl ActorMailbox) {
+    /// Drive the loop until the driver stops it or a handler fails the actor.
+    ///
+    /// Each turn the driver produces the next message (deciding for itself how to
+    /// poll the mailbox); the loop dispatches it. [`DefaultDriver`] makes this a
+    /// plain mailbox pull.
+    pub async fn run<D>(self, mut mailbox: impl ActorMailbox, mut driver: DemandSendDriver<D>)
+    where
+        D: EventDriver<A>,
+    {
         loop {
             // A handler failed the actor: stop pulling messages.
             if self.dispatch_context.shared.get_error().is_some() {
                 return;
             }
 
-            let Some(message) = mailbox.receive().await else {
+            let cx = EventContext::new(
+                self.dispatch_context.lock_strategy(),
+                self.dispatch_context.shared_state(),
+            );
+
+            // SAFETY: the driver's `next` future satisfies the loop's
+            //         `ThreadSafe` demand - the same anchor as the handler
+            //         futures below: the `EventDriver` impl demand-checks it
+            //         (the `#[event_source]` derive does so; hand-written drivers
+            //         uphold it), and the driver value is reclaimed by
+            //         `DemandSendDriver`.
+            let next = unsafe { AssertSend::new(driver.0.next(cx, &mut mailbox)) };
+            let Some(message) = next.await else {
                 return;
             };
 
-            // SAFETY: The message was sent to our mailbox, and we are in the actor
-            //         loop, thus this message can be dispatched onto our loop.
+            // SAFETY: The message was sent to our mailbox (or produced by our own
+            //         event driver), and we are in the actor loop, thus this
+            //         message can be dispatched onto our loop.
             let acquire = unsafe { message.dispatch_onto_loop::<A>(&self.dispatch_context) };
 
             // SAFETY: Every dispatcher reaching this mailbox was checked against
@@ -104,22 +125,37 @@ where
             // Loop exit, handler panic and task abort all transition to `Dead`.
             let _guard = shared.dead_on_drop();
 
-            // The initializer crossed onto this task; the actor is constructed
-            // where it will live.
-            let actor = match init.init().await {
-                Ok(actor) => actor,
-                Err(err) => {
-                    // Error first, then the guard's drop transitions to dead -
-                    // observers of `Dead` reliably see the error.
-                    let _ = shared.set_error(err);
-                    return;
-                }
-            };
+            // Scope the (possibly `!Send`) actor so it is provably gone - moved
+            // into its lock - before the loop's first await. The driver it yields
+            // does not borrow it (`use<Self>`), and its `Send` is reclaimed by
+            // `DemandSendDriver` for transport on the loop task.
+            let lock_strategy;
+            let driver;
+            {
+                // The initializer crossed onto this task; the actor is
+                // constructed where it will live.
+                let actor = match init.init().await {
+                    Ok(actor) => actor,
+                    Err(err) => {
+                        // Error first, then the guard's drop transitions to dead
+                        // - observers of `Dead` reliably see the error.
+                        let _ = shared.set_error(err);
+                        return;
+                    }
+                };
 
-            shared.transition_running();
+                shared.transition_running();
 
-            let this = Self::new(actor.into(), shared);
-            this.run(mailbox).await;
+                // SAFETY: this is a `ThreadSafe` loop; the driver upholds that
+                //         demand (the `#[event_source]` derive demand-checks the
+                //         driver and its `next` future; a hand-written driver
+                //         upholds it the same way).
+                driver = unsafe { DemandSendDriver::new(actor.select_event_driver()) };
+                lock_strategy = actor.into();
+            }
+
+            let this = Self::new(lock_strategy, shared);
+            this.run(mailbox, driver).await;
         }
     }
 }

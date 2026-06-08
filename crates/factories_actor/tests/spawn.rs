@@ -5,7 +5,8 @@
 ))]
 
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
-use factories_actor::actor::dispatch::{AssertSend, StaticDispatcher};
+use factories_actor::actor::dispatch::{AssertSend, DispatchedActorMessage, StaticDispatcher};
+use factories_actor::actor::event::{EventContext, EventDriver};
 use factories_actor::actor::handle::{AskError, Calling, MessageCall, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
@@ -72,6 +73,7 @@ unsafe impl Actor for Greeter {
     type LockStrategy = GreeterLock;
     type RunLoop = ConcurrentRunLoop<Greeter>;
     type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = ();
 }
 
 struct GreeterInit {
@@ -496,6 +498,7 @@ unsafe impl Actor for Counter {
     type LockStrategy = CounterLock;
     type RunLoop = SequentialLoop;
     type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = ();
 }
 
 #[derive(Debug)]
@@ -645,6 +648,7 @@ unsafe impl Actor for Tally {
     type LockStrategy = UnguardedLock<Tally>;
     type RunLoop = SequentialRunLoop<Tally>;
     type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = ();
 }
 
 #[derive(Debug)]
@@ -680,4 +684,137 @@ async fn sequential_loop_with_unguarded_lock() {
 
     assert_eq!(handle.ask(Bump(2)).exchange().await.expect("ask"), 2);
     assert_eq!(handle.ask(Bump(3)).exchange().await.expect("ask"), 5);
+}
+
+// -- Event source: a driver coordinating with handlers via shared state --------
+//
+// `Ticker`'s driver owns the polling decision: it fires `Tick` self-messages
+// until a lock-free counter in the *shared state extension* reaches a budget,
+// then defers to the mailbox. The `Tick` handler bumps that same counter - so
+// the driver and the handlers coordinate through `SharedStateExtension`, with no
+// actor-lock contention. This exercises the driver-owns-the-mailbox model, raw
+// shared access, and the extension all at once.
+
+const TICK_BUDGET: u32 = 3;
+
+#[derive(Default)]
+struct TickerShared {
+    fired: core::sync::atomic::AtomicU32,
+}
+
+struct Ticker {
+    total: u32,
+}
+
+declare_actor_rtti!(TICKER_RTTI, Ticker);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Ticker {
+    const RTTI: &'static ActorRtti = TICKER_RTTI;
+
+    type Channel = SimpleKanalActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Ticker>;
+    type RunLoop = SequentialRunLoop<Ticker>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = TickerShared;
+
+    fn select_event_driver(&self) -> impl EventDriver<Self> + use<> {
+        TickSource
+    }
+}
+
+#[derive(Debug)]
+struct Tick;
+declare_message!(Tick, ());
+
+impl MessageHandler<Tick> for Ticker {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Ticker, Tick> = declare_static_dispatcher!(Ticker, Tick);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, Tick, Self, lock::Exclusive>,
+    ) -> impl Future<Output = ()> + 'a {
+        async move {
+            // Grab the (lock-free) extension before decomposing the context.
+            let actor_cx = ctx.actor_context();
+            let (mut guard, _message, answer) = ctx.into_parts();
+            guard.total += 1;
+            actor_cx
+                .extension()
+                .fired
+                .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GetTotal;
+declare_message!(GetTotal, u32);
+
+impl MessageHandler<GetTotal> for Ticker {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Ticker, GetTotal> =
+        declare_static_dispatcher!(Ticker, GetTotal);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, GetTotal, Self, lock::Exclusive>,
+    ) -> impl Future<Output = ()> + 'a {
+        async move {
+            let (guard, _message, answer) = ctx.into_parts();
+            if let Some(answer) = answer {
+                let _ = answer.send(guard.total);
+            }
+        }
+    }
+}
+
+struct TickSource;
+
+impl EventDriver<Ticker> for TickSource {
+    fn next<'a, M>(
+        &'a mut self,
+        cx: EventContext<'a, Ticker>,
+        mailbox: &'a mut M,
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a
+    where
+        M: ActorMailbox + 'a,
+    {
+        async move {
+            // Drive our own source until the handlers have processed the budget,
+            // reading the shared counter the `Tick` handler bumps. Don't even
+            // poll the mailbox until then - the actor's lever against starvation.
+            if cx.extension().fired.load(core::sync::atomic::Ordering::Acquire) < TICK_BUDGET {
+                return Some(cx.message(Tick));
+            }
+            // Budget drained: defer to the mailbox.
+            mailbox.receive().await
+        }
+    }
+}
+
+#[tokio::test]
+async fn event_source_produces_self_messages() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Ticker { total: 0 })
+        .await
+        .expect("ticker init is infallible");
+
+    // The driver drains its whole budget (coordinating with the handler via the
+    // shared counter) before it ever polls the mailbox, so the first query sees
+    // every tick.
+    let total = handle.ask(GetTotal).exchange().await.expect("ask");
+    assert_eq!(total, TICK_BUDGET, "event source should fire its whole budget");
+
+    // No further ticks once the budget drained.
+    let again = handle.ask(GetTotal).exchange().await.expect("ask");
+    assert_eq!(again, TICK_BUDGET, "no ticks after the budget drained");
 }

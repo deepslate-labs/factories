@@ -582,6 +582,7 @@ mod tests {
         type LockStrategy = TableActorLock;
         type RunLoop = TableActorLoop;
         type TypedHandle = TypedActorHandle<Self>;
+        type SharedStateExtension = ();
     }
 
     #[test]

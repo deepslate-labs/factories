@@ -110,6 +110,7 @@ struct InnerSharedActorState<A: Actor + ?Sized> {
     // Late-bound: the run loop future captures the shared state *before* the
     // spawner produces the task handle, so the handle is attached post-spawn.
     task: OnceCell<ActorTaskHandle>,
+    extension: A::SharedStateExtension,
 }
 
 impl<A: Actor + ?Sized> InnerSharedActorState<A> {
@@ -118,6 +119,7 @@ impl<A: Actor + ?Sized> InnerSharedActorState<A> {
             error: OnceCell::new(),
             lifecycle: LifecycleCell::new(),
             task: OnceCell::new(),
+            extension: A::SharedStateExtension::default(),
         }
     }
 }
@@ -172,6 +174,12 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
     /// The task handle of the actor task, if one was attached.
     pub fn task(&self) -> Option<&ActorTaskHandle> {
         self.inner.task.get()
+    }
+
+    /// The actor's user-defined shared state extension
+    /// ([`Actor::SharedStateExtension`](crate::actor::Actor::SharedStateExtension)).
+    pub fn extension(&self) -> &A::SharedStateExtension {
+        &self.inner.extension
     }
 
     /// The current lifecycle state of the actor.

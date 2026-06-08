@@ -94,6 +94,7 @@ unsafe impl Actor for StaleActor {
     type LockStrategy = StaleLock;
     type RunLoop = StaleLoop;
     type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = ();
 }
 
 // -- Messages -------------------------------------------------------------------
