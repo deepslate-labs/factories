@@ -93,10 +93,33 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     // in place of the real expansion when diagnostics are emitted) free of
     // unresolvable attributes, so the impl block and its methods survive
     // errors without cascading into the rest of the crate.
+    //
+    // `#[event_source]` methods are *consumed* (dropped from the re-emitted
+    // block) rather than kept: they have no `self`, so they are no good as
+    // inherent methods - the whole method becomes the generated
+    // `ActorEventSource` impl. `#[handler]` methods stay, since the macro is
+    // additive there.
     let mut handlers = Vec::new();
-    for item in &mut input.items {
+    let mut event_sources = Vec::new();
+    input.items.retain_mut(|item| {
         match item {
             ImplItem::Fn(function) => {
+                let mut is_event_source = false;
+                function.attrs.retain(|attr| {
+                    if attr.path().is_ident("event_source") {
+                        if !matches!(attr.meta, Meta::Path(_)) {
+                            proc_macro_error::emit_error!(
+                                attr.span(),
+                                "#[event_source] takes no arguments"
+                            );
+                        }
+                        is_event_source = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+
                 let mut markers = Vec::new();
                 function.attrs.retain(|attr| {
                     if attr.path().is_ident("handler") {
@@ -106,6 +129,17 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
                         true
                     }
                 });
+
+                if is_event_source {
+                    if !markers.is_empty() {
+                        proc_macro_error::emit_error!(
+                            function.sig.ident.span(),
+                            "#[event_source] and #[handler] cannot be combined on one method"
+                        );
+                    }
+                    event_sources.push(function.clone());
+                    return false;
+                }
 
                 if !markers.is_empty() {
                     handlers.push((function.clone(), markers));
@@ -124,19 +158,33 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
                         }
                     }
                 }
+
+                true
             }
-            ImplItem::Const(item) => reject_misplaced_markers(&item.attrs),
-            ImplItem::Type(item) => reject_misplaced_markers(&item.attrs),
-            ImplItem::Macro(item) => reject_misplaced_markers(&item.attrs),
+            ImplItem::Const(item) => {
+                reject_misplaced_markers(&item.attrs);
+                true
+            }
+            ImplItem::Type(item) => {
+                reject_misplaced_markers(&item.attrs);
+                true
+            }
+            ImplItem::Macro(item) => {
+                reject_misplaced_markers(&item.attrs);
+                true
+            }
             // Verbatim/unknown items: the macro cannot see their attributes,
-            // so a stray `#[handler]` would be silently ignored - reject the
-            // item instead.
-            other => proc_macro_error::emit_error!(
-                other.span(),
-                "#[messages] does not support this item, move it to a separate impl block"
-            ),
+            // so a stray marker would be silently ignored - reject the item
+            // instead.
+            other => {
+                proc_macro_error::emit_error!(
+                    other.span(),
+                    "#[messages] does not support this item, move it to a separate impl block"
+                );
+                true
+            }
         }
-    }
+    });
 
     proc_macro_error::set_dummy(input.to_token_stream());
 
@@ -164,6 +212,20 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
         }
     }
 
+    // At most one event source per actor: a second `ActorEventSource` impl would
+    // conflict anyway, but the clearer error points at the duplicate here.
+    if let Some(extra) = event_sources.get(1) {
+        proc_macro_error::emit_error!(
+            extra.sig.ident.span(),
+            "an actor can declare at most one #[event_source]"
+        );
+    }
+    for function in &event_sources {
+        if let Some(expansion) = expand_event_source(self_ty, function) {
+            generated.extend(expansion);
+        }
+    }
+
     // The typed-handle methods forward to the generated messages. They live on
     // the derive's handle newtype and are gated behind `tokio-answer` (via the
     // library macro) because `MessageCall` is - feature-blind, like everything
@@ -188,15 +250,77 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     }
 }
 
-/// `#[handler]` on a non-method item: emit an error. The marker is left in
-/// place - the expansion is discarded once diagnostics exist, so rustc's
-/// follow-up "cannot find attribute" noise is acceptable.
+/// A method-only marker (`#[handler]` / `#[event_source]`) on a non-method
+/// item: emit an error. The marker is left in place - the expansion is discarded
+/// once diagnostics exist, so rustc's follow-up "cannot find attribute" noise is
+/// acceptable.
 fn reject_misplaced_markers(attrs: &[Attribute]) {
     for attr in attrs {
         if attr.path().is_ident("handler") {
             proc_macro_error::emit_error!(attr.span(), "#[handler] is only supported on methods");
+        } else if attr.path().is_ident("event_source") {
+            proc_macro_error::emit_error!(
+                attr.span(),
+                "#[event_source] is only supported on methods"
+            );
         }
     }
+}
+
+/// Expand an `#[event_source]` method into an `ActorEventSource` impl.
+///
+/// The method *is* `ActorEventSource::next_event`, so it is re-emitted verbatim
+/// (only renamed): the user writes that trait's exact signature - `async fn`,
+/// `cx: EventContext<Self>`, `mailbox: &mut impl ActorMailbox` returning
+/// `Option<DispatchedActorMessage>` - and a wrong shape surfaces as a normal
+/// trait-mismatch error on their method. The validations here only sharpen the
+/// diagnostics for the likely slips (a stray `self`, a missing `async`).
+fn expand_event_source(self_ty: &Type, function: &ImplItemFn) -> Option<TokenStream> {
+    let signature = &function.sig;
+
+    if !signature.generics.params.is_empty() || signature.generics.where_clause.is_some() {
+        proc_macro_error::emit_error!(
+            signature.generics.span(),
+            "#[event_source] cannot have explicit generics; the mailbox is `&mut impl ActorMailbox`"
+        );
+        return None;
+    }
+
+    if let Some(unsafety) = &signature.unsafety {
+        proc_macro_error::emit_error!(unsafety.span(), "#[event_source] cannot be `unsafe`");
+        return None;
+    }
+
+    if let Some(abi) = &signature.abi {
+        proc_macro_error::emit_error!(abi.span(), "#[event_source] cannot be `extern`");
+        return None;
+    }
+
+    if signature.asyncness.is_none() {
+        proc_macro_error::emit_error!(signature.ident.span(), "#[event_source] must be `async`");
+        return None;
+    }
+
+    // Stateless: an event source never borrows the actor directly - all access
+    // goes through the event context, so the lock policy stays the driver's.
+    if let Some(receiver) = signature.receiver() {
+        proc_macro_error::emit_error!(
+            receiver.span(),
+            "#[event_source] takes no `self`: it is stateless and reaches the actor through \
+             the event context"
+        );
+        return None;
+    }
+
+    // The method *is* `next_event`; re-emit it under that name.
+    let mut next_event = function.clone();
+    next_event.sig.ident = Ident::new("next_event", function.sig.ident.span());
+
+    Some(quote! {
+        impl ::factories_actor::actor::event::ActorEventSource for #self_ty {
+            #next_event
+        }
+    })
 }
 
 fn expand_handler(

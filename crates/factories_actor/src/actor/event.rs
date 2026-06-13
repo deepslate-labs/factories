@@ -167,6 +167,22 @@ impl<'a, A: Actor + ?Sized> EventContext<'a, A> {
     }
 }
 
+/// An actor's extra event source: the logic half of an [`EventDriver`], with no
+/// driver of its own to carry state.
+#[allow(async_fn_in_trait)]
+pub trait ActorEventSource: Actor {
+    /// Produce the next message to dispatch, or `None` to stop the loop.
+    ///
+    /// Owns the turn's mailbox exactly like [`EventDriver::next`]: receive from
+    /// it, race it against its own futures, or skip it to drain a backlog. The
+    /// same cancel-safety contract applies - keep in-flight progress reachable
+    /// across `cx` / shared state so a dropped branch can resume next turn.
+    async fn next_event(
+        cx: EventContext<'_, Self>,
+        mailbox: &mut impl ActorMailbox,
+    ) -> Option<DispatchedActorMessage>;
+}
+
 /// Carries an [`EventDriver`] across a run loop task that may migrate between
 /// threads.
 ///

@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
-use syn::{DeriveInput, LitStr, Type};
+use quote::{ToTokens, format_ident, quote};
+use syn::{DeriveInput, Ident, LitStr, Type};
 
 use crate::util;
 
@@ -99,20 +99,40 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let binder = util::value_or_default(config.binder, binder_default);
     let lock = util::value_or_default(config.lock, lock_default);
     let run_loop = util::value_or_default(config.run_loop, run_loop_default);
-    // Not template members: the shared-state extension defaults to `()`, the
-    // event driver to the plain mailbox-pulling `DefaultMailboxDriver`.
+    // Not a template member: the shared-state extension defaults to `()`.
     let shared = util::value_or_default(config.shared, quote!(()));
-    let event_driver = util::value_or_default(
-        config.event_driver,
-        quote!(::factories_actor::actor::event::DefaultMailboxDriver),
-    );
     let rtti_name = util::rtti_name(config.name, ident);
+
+    let vis = &input.vis;
+
+    // The event driver defaults to a generated loop that autoref-detects an
+    // `#[event_source]` impl on the actor (pulling the mailbox when there is
+    // none); an explicit `event_driver = ...` takes full control and skips it.
+    // Like the handle, the generated loop is a module-scope newtype (it is named
+    // by the public `EventDriver` associated type, so it cannot be private); its
+    // impls stay in the `const _` block.
+    let (event_driver, event_loop_decl, event_loop_items) = match config.event_driver {
+        Some(explicit) => (explicit.into_token_stream(), TokenStream::new(), TokenStream::new()),
+        None => {
+            let loop_ident = format_ident!("{}EventLoop", ident);
+            let loop_doc = format!(
+                "Generated event driver for the [`{ident}`] actor: pulls its mailbox, \
+                 dispatching to an `#[event_source]` impl when one is present."
+            );
+            let decl = quote! {
+                #[doc = #loop_doc]
+                #[derive(::core::clone::Clone, ::core::fmt::Debug)]
+                #vis struct #loop_ident;
+            };
+            let items = generated_event_loop(ident, &loop_ident);
+            (loop_ident.into_token_stream(), decl, items)
+        }
+    };
 
     // The generated typed-handle newtype. Lives at module scope (not inside the
     // `const _` block) so it is nameable, and inherits the actor's visibility.
     // It is the actor's `TypedHandle`, and `#[messages]` adds the per-message
     // methods to it as inherent impls.
-    let vis = &input.vis;
     let handle_ident = format_ident!("{}Handle", ident);
     let handle_ty = quote!(::factories_actor::actor::handle::TypedActorHandle<#ident>);
     let handle_doc = format!(
@@ -169,8 +189,12 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
             }
         }
 
+        #event_loop_decl
+
         const _: () = {
             ::factories_actor::declare_actor_rtti!(__DERIVED_ACTOR_RTTI, #ident, #rtti_name);
+
+            #event_loop_items
 
             unsafe impl ::factories_actor::actor::Actor for #ident {
                 const RTTI: &'static ::factories_actor::actor::rtti::ActorRtti =
@@ -186,5 +210,104 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 type EventDriver = #event_driver;
             }
         };
+    }
+}
+
+/// The default event driver emitted by the derive: an [`EventDriver`] that
+/// autoref-specializes at the concrete actor type. When the actor implements
+/// `ActorEventSource` (via `#[event_source]`), the `&__Probe` arm applies - one
+/// fewer autoderef step, so method resolution picks it; otherwise the bare
+/// `__Probe` arm pulls straight from the mailbox, exactly like
+/// `DefaultMailboxDriver`.
+///
+/// The specialization *must* be inlined at this concrete site: autoref
+/// resolution only fires once `Self` is a known type, so it cannot live behind a
+/// generic helper. The two `__Via*` traits and the `__Probe` carrier are nested
+/// inside `next` so they never leak into the actor's namespace.
+fn generated_event_loop(ident: &Ident, loop_ident: &Ident) -> TokenStream {
+    let dispatched = quote!(::factories_actor::actor::dispatch::DispatchedActorMessage);
+    let event_context = quote!(::factories_actor::actor::event::EventContext);
+    let mailbox_bound = quote!(::factories_actor::spawn::ActorMailbox);
+    let event_source = quote!(::factories_actor::actor::event::ActorEventSource);
+    let output = quote!(::core::option::Option<#dispatched>);
+    let future = quote!(::core::future::Future<Output = #output>);
+
+    quote! {
+        impl ::core::convert::From<&#ident> for #loop_ident {
+            fn from(_actor: &#ident) -> Self {
+                Self
+            }
+        }
+
+        impl<__M> ::factories_actor::actor::event::EventDriver<#ident, __M> for #loop_ident
+        where
+            __M: #mailbox_bound,
+        {
+            fn next<'__event>(
+                &'__event mut self,
+                cx: #event_context<'__event, #ident>,
+                mailbox: &'__event mut __M,
+            ) -> impl #future + '__event {
+                // Higher priority (impl for `&__Probe`, one fewer autoderef):
+                // gated on the actor having an event source.
+                trait __ViaSource<__A: ::factories_actor::actor::Actor> {
+                    fn __select<'__a, __MB: #mailbox_bound>(
+                        self,
+                        cx: #event_context<'__a, __A>,
+                        mailbox: &'__a mut __MB,
+                    ) -> impl #future + '__a;
+                }
+
+                // Fallback (impl for bare `__Probe`): pull from the mailbox.
+                trait __ViaMailbox<__A: ::factories_actor::actor::Actor> {
+                    fn __select<'__a, __MB: #mailbox_bound>(
+                        self,
+                        cx: #event_context<'__a, __A>,
+                        mailbox: &'__a mut __MB,
+                    ) -> impl #future + '__a;
+                }
+
+                // A zero-sized carrier for the actor type. Copy by hand so the
+                // bare-`__Probe` arm can be reached by autoderef without forcing
+                // `#ident: Copy`.
+                struct __Probe<__A>(::core::marker::PhantomData<__A>);
+                impl<__A> ::core::clone::Clone for __Probe<__A> {
+                    fn clone(&self) -> Self {
+                        *self
+                    }
+                }
+                impl<__A> ::core::marker::Copy for __Probe<__A> {}
+
+                impl<__A> __ViaSource<__A> for &__Probe<__A>
+                where
+                    __A: #event_source,
+                {
+                    fn __select<'__a, __MB: #mailbox_bound>(
+                        self,
+                        cx: #event_context<'__a, __A>,
+                        mailbox: &'__a mut __MB,
+                    ) -> impl #future + '__a {
+                        <__A as #event_source>::next_event(cx, mailbox)
+                    }
+                }
+
+                impl<__A: ::factories_actor::actor::Actor> __ViaMailbox<__A> for __Probe<__A> {
+                    fn __select<'__a, __MB: #mailbox_bound>(
+                        self,
+                        _cx: #event_context<'__a, __A>,
+                        mailbox: &'__a mut __MB,
+                    ) -> impl #future + '__a {
+                        mailbox.receive()
+                    }
+                }
+
+                // A `&const` probe so the borrowed-self lifetime captured by the
+                // `&__Probe` arm's RPITIT future is `'static` (harmless), not a
+                // temporary's - otherwise the returned future would not outlive
+                // the call.
+                const __PROBE: __Probe<#ident> = __Probe(::core::marker::PhantomData);
+                (&__PROBE).__select(cx, mailbox)
+            }
+        }
     }
 }

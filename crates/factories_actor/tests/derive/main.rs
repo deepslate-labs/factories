@@ -19,10 +19,12 @@
 //! - [`handlers`]: `#[messages]` basics - generation, decomposition,
 //!   dynamic registration
 //! - [`markers`]: parameter markers - `#[answer]`, `#[message]`, `#[envelope]`
+//! - [`event_source`]: `#[event_source]` - the derive's autoref-detected driver
 //! - [`failure`]: actor failure - `die_on_err` modes, `#[context]` fail
 //! - [`template`]: `ActorTemplate` bundles
 
 mod actor;
+mod event_source;
 mod failure;
 mod handlers;
 mod markers;

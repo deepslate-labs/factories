@@ -15,18 +15,26 @@ mod util;
 /// `factories_actor::runtime::defaults` (some of which are feature-gated, see
 /// the module documentation there).
 ///
-/// | key        | associated type | default                    |
-/// |------------|-----------------|----------------------------|
-/// | `channel`  | `Channel`       | `DefaultChannel`           |
-/// | `error`    | `Error`         | `DefaultError`             |
-/// | `binder`   | `RuntimeBinder` | `DefaultRuntimeBinder<Self>` |
-/// | `lock`     | `LockStrategy`  | `DefaultLockStrategy<Self>` |
-/// | `run_loop` | `RunLoop`       | `DefaultRunLoop<Self>`     |
+/// | key            | associated type       | default                       |
+/// |----------------|-----------------------|-------------------------------|
+/// | `channel`      | `Channel`             | `DefaultChannel`              |
+/// | `error`        | `Error`               | `DefaultError`                |
+/// | `binder`       | `RuntimeBinder`       | `DefaultRuntimeBinder<Self>`  |
+/// | `lock`         | `LockStrategy`        | `DefaultLockStrategy<Self>`   |
+/// | `run_loop`     | `RunLoop`             | `DefaultRunLoop<Self>`        |
+/// | `shared`       | `SharedStateExtension`| `()`                          |
+/// | `event_driver` | `EventDriver`         | a generated mailbox loop      |
+///
+/// The default `EventDriver` is a generated loop that pulls the mailbox and, at
+/// the concrete actor type, autoref-detects an `#[event_source]` impl (see
+/// [`messages`]) to multiplex an extra source onto the loop. Setting
+/// `event_driver` explicitly takes full control and skips the generated loop.
 ///
 /// Additionally `name = "..."` overrides the debug name baked into the RTTI
 /// (defaults to the stringified type name), and `template = SomeTemplate`
 /// pulls omitted keys from an `ActorTemplate` impl instead of the built-in
 /// defaults (explicit keys still override individual template members).
+/// `template` does not cover `shared` or `event_driver`.
 ///
 /// ```ignore
 /// #[derive(Actor)]
@@ -118,6 +126,27 @@ pub fn derive_message(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 /// - `#[handler(die_on_err = consume)]` - the death consumes the error: the
 ///   answer becomes the Ok part, the asker's answer channel just closes on
 ///   error. No `Clone` needed.
+///
+/// One method in the block may instead be marked `#[event_source]`, giving the
+/// actor an extra source feeding its run loop alongside the mailbox (timers,
+/// sockets, a self-driven computation). It is *not* a handler: it takes no
+/// `self` - it is stateless, reaching the actor through the event context - and
+/// has the fixed signature
+///
+/// ```ignore
+/// #[event_source]
+/// async fn drive(
+///     cx: EventContext<'_, Self>,
+///     mailbox: &mut impl ActorMailbox,
+/// ) -> Option<DispatchedActorMessage> { /* ... */ }
+/// ```
+///
+/// Each turn the run loop hands it the mailbox; it decides whether to receive
+/// from it, race it against its own futures, or skip it, and returns the next
+/// message to dispatch (`cx.message(M)` builds a self-dispatch) or `None` to
+/// stop. `#[derive(Actor)]` autoref-detects the source and routes its generated
+/// driver through it - no `EventDriver` written by hand - unless an explicit
+/// `#[actor(event_driver = ...)]` takes over.
 ///
 /// ```ignore
 /// #[factories_actor::messages]
