@@ -10,7 +10,8 @@ use factories_actor::actor::dispatch::StaticDispatcher;
 use factories_actor::actor::event::DefaultMailboxDriver;
 use factories_actor::actor::handle::{ActorHandle, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
-use factories_actor::actor::{Actor, MessageHandler, MessageHandlerContext};
+use factories_actor::actor::work::IntoRunLoopWork;
+use factories_actor::actor::{Actor, ActorRunLoop, MessageHandler, MessageHandlerContext};
 use factories_actor::message::Message;
 use factories_actor::message::channel::answer_channel;
 use factories_actor::message::envelope::MessageEnvelope;
@@ -83,7 +84,7 @@ impl MessageHandler<AddValue> for Calc {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, AddValue, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (mut guard, message, _) = ctx.into_parts();
             guard.value += message.0;
@@ -106,7 +107,7 @@ impl MessageHandler<GetValue> for Calc {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, GetValue, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (guard, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
@@ -130,7 +131,7 @@ impl MessageHandler<Describe> for Calc {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Describe, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (guard, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
@@ -150,7 +151,7 @@ impl MessageHandler<Describe> for Mirror {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Describe, Self, Shared>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (_, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
@@ -175,7 +176,7 @@ impl MessageHandler<Unregistered> for Calc {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Unregistered, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             drop(ctx);
         }

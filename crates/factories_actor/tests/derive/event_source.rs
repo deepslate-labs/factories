@@ -46,7 +46,7 @@ impl Ticker {
     #[event_source]
     async fn drive(
         cx: EventContext<'_, Self>,
-        mailbox: &mut impl ActorMailbox,
+        mailbox: &mut (impl ActorMailbox + Send),
     ) -> Option<DispatchedActorMessage> {
         if cx.extension().fired.load(Ordering::Acquire) < TICK_BUDGET {
             return Some(cx.message(Tick));
@@ -151,7 +151,11 @@ impl From<&Beacon> for CountdownDriver {
     }
 }
 
-impl<M: ActorMailbox> EventDriver<Beacon, M> for CountdownDriver {
+// `M: Send` because `next` is an `async` block capturing `&mut M` across its
+// await: the loop is `ThreadSafe`, so `EventDriver::next` now demands a `Send`
+// future. (`DefaultMailboxDriver` sidesteps this by returning `receive()`
+// directly, capturing nothing extra.)
+impl<M: ActorMailbox + Send> EventDriver<Beacon, M> for CountdownDriver {
     fn next<'a>(
         &'a mut self,
         cx: EventContext<'a, Beacon>,
@@ -179,7 +183,13 @@ async fn manual_stateful_driver_fires_seeded_budget() {
     let spawner = TokioTaskSpawner::current();
 
     let handle = ActorLauncher::default()
-        .spawn_ready(&spawner, Beacon { budget: 4, pings: 0 })
+        .spawn_ready(
+            &spawner,
+            Beacon {
+                budget: 4,
+                pings: 0,
+            },
+        )
         .await
         .expect("beacon init is infallible");
 

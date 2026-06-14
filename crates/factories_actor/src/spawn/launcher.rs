@@ -61,7 +61,7 @@ where
     A::Channel: CreatableChannel,
     A::RunLoop: SpawnableRunLoop<A>,
     A::Error: Send + Sync + 'static,
-    A::EventDriver: EventDriver<A, <A::Channel as CreatableChannel>::Mailbox>,
+    A::EventDriver: EventDriver<A, <A::Channel as CreatableChannel>::Mailbox> + Send,
 {
     /// Assemble and fire. The initializer crosses into the spawned task, where
     /// [`ActorInit::init`] constructs the actor.

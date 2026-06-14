@@ -39,11 +39,12 @@ pub trait EventDriver<A: Actor + ?Sized, M> {
     /// Cancel-safety is the driver's responsibility: any racing it does must
     /// keep in-flight progress in `self`, so a branch dropped when another wins
     /// can resume next turn.
+    // The `Send` bound here mainly exists because RTN is not stable yet.
     fn next<'a>(
         &'a mut self,
         cx: EventContext<'a, A>,
         mailbox: &'a mut M,
-    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a;
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + Send + 'a;
 }
 
 /// The default driver: pull straight from the mailbox.
@@ -58,12 +59,15 @@ impl<A: ?Sized> From<&A> for DefaultMailboxDriver {
     }
 }
 
-impl<A: Actor + ?Sized, M: ActorMailbox> EventDriver<A, M> for DefaultMailboxDriver {
+impl<A: Actor + ?Sized, M> EventDriver<A, M> for DefaultMailboxDriver
+where
+    M: ActorMailbox + Send,
+{
     fn next<'a>(
         &'a mut self,
         _cx: EventContext<'a, A>,
         mailbox: &'a mut M,
-    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a {
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + Send + 'a {
         mailbox.receive()
     }
 }
@@ -169,7 +173,6 @@ impl<'a, A: Actor + ?Sized> EventContext<'a, A> {
 
 /// An actor's extra event source: the logic half of an [`EventDriver`], with no
 /// driver of its own to carry state.
-#[allow(async_fn_in_trait)]
 pub trait ActorEventSource: Actor {
     /// Produce the next message to dispatch, or `None` to stop the loop.
     ///
@@ -177,43 +180,9 @@ pub trait ActorEventSource: Actor {
     /// it, race it against its own futures, or skip it to drain a backlog. The
     /// same cancel-safety contract applies - keep in-flight progress reachable
     /// across `cx` / shared state so a dropped branch can resume next turn.
-    async fn next_event(
+    // The `Send` bound here mainly exists because RTN is not stable yet.
+    fn next_event(
         cx: EventContext<'_, Self>,
-        mailbox: &mut impl ActorMailbox,
-    ) -> Option<DispatchedActorMessage>;
+        mailbox: &mut (impl ActorMailbox + Send),
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + Send;
 }
-
-/// Carries an [`EventDriver`] across a run loop task that may migrate between
-/// threads.
-///
-/// This is the value-level counterpart of
-/// [`AssertSend`](crate::actor::dispatch::AssertSend): the demand machinery
-/// cannot express "`Send` only when the loop is `ThreadSafe`" as a bound, so the
-/// loop reclaims it. The `EventDriver`'s `next` future is reclaimed with
-/// `AssertSend`; the driver value itself is reclaimed here.
-///
-/// # Safety
-/// Sound under the run loop's [`DispatchDemand`](crate::actor::DispatchDemand)
-/// obligation: a `ThreadSafe` loop only carries a driver whose construction
-/// upholds the demand - the `#[event_source]` derive demand-checks the driver
-/// and its future, and a hand-written driver upholds it the same way a
-/// hand-written dispatcher does. A `ThreadLocal` loop never sends the driver.
-pub struct DemandSendDriver<D>(pub(crate) D);
-
-impl<D> DemandSendDriver<D> {
-    /// Wrap a driver for transport on a run loop task.
-    ///
-    /// # Safety
-    /// The caller asserts the driver upholds the run loop's
-    /// [`DispatchDemand`](crate::actor::DispatchDemand): on a `ThreadSafe` loop
-    /// the driver (and the futures its `next` produces) must be `Send`. See the
-    /// type docs.
-    pub const unsafe fn new(driver: D) -> Self {
-        Self(driver)
-    }
-}
-
-// SAFETY: see the type-level documentation - this reclaims demand-governed
-//         `Send`, anchored by the run loop's demand obligation asserted at
-//         construction.
-unsafe impl<D> Send for DemandSendDriver<D> {}

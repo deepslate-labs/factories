@@ -1,5 +1,6 @@
 use crate::actor::dispatch::{ActorMessageDispatcher, StaticDispatcher};
 use crate::actor::rtti::ActorRtti;
+use crate::actor::work::IntoRunLoopWork;
 use crate::message::Message;
 use crate::message::channel::AnswerSender;
 use crate::message::envelope::MessageEnvelope;
@@ -17,6 +18,7 @@ pub mod identity;
 pub mod rtti;
 pub mod state;
 pub mod task;
+pub mod work;
 
 /// Derive macro generating an [`Actor`] implementation together with its RTTI
 /// declaration. Configured via `#[actor(...)]`; omitted components fall back
@@ -105,46 +107,6 @@ pub trait AccessMode<A: Actor + ?Sized> {
     fn acquire<'a>(lock_strategy: &'a A::LockStrategy) -> impl Future<Output = Self::Guard<'a>>
     where
         Self: 'a;
-}
-
-/// A demand a run loop places on the message handling machinery it drives.
-///
-/// Demands are enforced at dispatcher *declaration* sites (see
-/// [`declare_static_dispatcher!`](crate::declare_static_dispatcher)), where the
-/// concrete handler future types are known and their auto traits leak. They never
-/// appear in caller-facing signatures - whether a handler future is `Send` is the
-/// run loop's problem, not the sender's.
-pub trait DispatchDemand {}
-
-/// Demand of run loops that drive handler futures on tasks which may migrate
-/// between threads (e.g. work-stealing executors).
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ThreadSafe;
-
-impl DispatchDemand for ThreadSafe {}
-
-/// Demand of run loops that drive handler futures on a single thread.
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ThreadLocal;
-
-impl DispatchDemand for ThreadLocal {}
-
-/// A future satisfying the given dispatch demand.
-#[diagnostic::on_unimplemented(
-    message = "this handler future does not satisfy the `{D}` demand of the actor's run loop",
-    note = "run loops with a `ThreadSafe` demand require handler futures to be `Send`"
-)]
-pub trait DemandedFuture<D: DispatchDemand>: Future {}
-
-impl<F: Future + Send> DemandedFuture<ThreadSafe> for F {}
-impl<F: Future> DemandedFuture<ThreadLocal> for F {}
-
-/// Identity helper that enforces a dispatch demand on a future at compile time.
-///
-/// Used by dispatcher declaration macros; the returned future is the input,
-/// unchanged - only the bound matters.
-pub const fn demand_check<D: DispatchDemand, F: DemandedFuture<D>>(fut: F) -> F {
-    fut
 }
 
 /// Context passed to a message handler of an actor.
@@ -250,14 +212,18 @@ pub trait MessageHandler<M: Message>: Actor {
     /// The statically bound dispatcher for this actor/message pair.
     ///
     /// Declared via [`declare_static_dispatcher!`](crate::declare_static_dispatcher),
-    /// which enforces the run loop's [`DispatchDemand`] where the concrete future
-    /// types are known. Typed handles use this constant to skip the runtime binder
-    /// at statically known dispatch sites.
+    /// which erases the dispatch into the run loop's
+    /// [`ErasedWork`](crate::actor::work::ErasedWork) via its
+    /// [`WorkConverter`](ActorRunLoop::WorkConverter) where the concrete handler
+    /// types are known (so the converter's `Send` requirement is checked there).
+    /// Typed handles use this constant to skip the runtime binder at statically
+    /// known dispatch sites.
     const DISPATCHER: StaticDispatcher<Self, M>;
 
+    /// Handle the message, producing this loop's work.
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, M, Self, Self::AccessMode>,
-    ) -> impl Future<Output = ()> + 'a;
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a;
 }
 
 /// Implementation that binds handlers to messages.
@@ -272,7 +238,7 @@ pub trait MessageHandler<M: Message>: Actor {
 /// The implementation must ensure that the bound handler will be able to handle
 /// envelopes of the given message type and that the handler is invokable on the
 /// actor thread. The bound dispatcher must satisfy the demand of the target
-/// actor's run loop (see [`DispatchDemand`]).
+/// actor's run loop.
 pub unsafe trait ActorRuntimeBinder: Send + Sync {
     /// Bind the handler for the given message.
     ///
@@ -307,10 +273,16 @@ pub trait ActorRunLoop<A: Actor + ?Sized> {
     /// constraint.
     type DispatchContext: ActorRunLoopDispatchContext<A> + 'static;
 
-    /// The demand this run loop places on handler futures.
+    /// Selects how a handler's return becomes this loop's work, and what that
+    /// work *is* (its [`Erased`](crate::actor::work::WorkConverter::Erased)
+    /// representation).
     ///
-    /// Enforced at dispatcher declaration sites; see [`DispatchDemand`].
-    type Demand: DispatchDemand;
+    /// `MessageHandler::handle` returns `impl IntoRunLoopWork<Self::WorkConverter>`;
+    /// the converter the loop ships decides what shapes it accepts (a `Send`
+    /// future for a work-stealing loop, a plain value for a single-thread loop,
+    /// ...), whether the resulting work is `Send`, and how it is driven. This is
+    /// where the loop owns its dispatch discipline.
+    type WorkConverter: work::WorkConverter;
 }
 
 /// Marker contract for run loops that never overlap dispatches.

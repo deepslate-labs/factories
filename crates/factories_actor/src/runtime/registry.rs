@@ -72,9 +72,9 @@ impl DynamicHandlerRegistration {
     ///
     /// # Safety
     /// The caller must ensure that the dispatcher dispatches envelopes carrying
-    /// messages described by `message` to actors described by `actor`, and that
-    /// it satisfies the [`crate::actor::DispatchDemand`] of that actor's run
-    /// loop.
+    /// messages described by `message` to actors described by `actor`, erasing
+    /// the dispatch through that actor's run loop's
+    /// [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter).
     pub const unsafe fn from_raw(
         actor: &'static ActorRtti,
         message: &'static MessageRtti,
@@ -453,16 +453,14 @@ mod tests {
     use super::*;
     use crate::actor::channel::{ActorChannel, ActorChannelSendResult, ActorChannelSendable};
     use crate::actor::dispatch::{
-        BoxedAcquireFuture, BoxedHandlerFuture, DispatchContextPtr, DispatchedActorMessage,
-        DispatchedActorMessageContext,
+        DispatchContextPtr, DispatchedActorMessage, DispatchedActorMessageContext,
     };
-    use crate::actor::{
-        ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy, StaticOnlyBinder, ThreadLocal,
-    };
-    use crate::message::envelope::MessageEnvelope;
-    use core::sync::atomic::{AtomicUsize, Ordering};
     use crate::actor::event::DefaultMailboxDriver;
     use crate::actor::handle::TypedActorHandle;
+    use crate::actor::work::{ErasedWork, SendFutureConverter, into_work};
+    use crate::actor::{ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy, StaticOnlyBinder};
+    use crate::message::envelope::MessageEnvelope;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     struct UniqueMsg;
     crate::declare_message!(UniqueMsg, ());
@@ -482,26 +480,14 @@ mod tests {
     static DISPATCH_A_CALLS: AtomicUsize = AtomicUsize::new(0);
     static DISPATCH_B_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    unsafe fn dispatch_a<'ctx>(
-        _: DispatchContextPtr<'ctx>,
-        _: DispatchedActorMessageContext,
-    ) -> BoxedAcquireFuture<'ctx> {
+    unsafe fn dispatch_a(_: DispatchContextPtr, _: DispatchedActorMessageContext) -> ErasedWork {
         DISPATCH_A_CALLS.fetch_add(1, Ordering::Relaxed);
-        Box::pin(async {
-            let handler: BoxedHandlerFuture<'ctx> = Box::pin(async {});
-            handler
-        })
+        ErasedWork::pack(into_work::<SendFutureConverter, _>(async {}))
     }
 
-    unsafe fn dispatch_b<'ctx>(
-        _: DispatchContextPtr<'ctx>,
-        _: DispatchedActorMessageContext,
-    ) -> BoxedAcquireFuture<'ctx> {
+    unsafe fn dispatch_b(_: DispatchContextPtr, _: DispatchedActorMessageContext) -> ErasedWork {
         DISPATCH_B_CALLS.fetch_add(1, Ordering::Relaxed);
-        Box::pin(async {
-            let handler: BoxedHandlerFuture<'ctx> = Box::pin(async {});
-            handler
-        })
+        ErasedWork::pack(into_work::<SendFutureConverter, _>(async {}))
     }
 
     /// Invoke a bound dispatcher the way a run loop would.
@@ -556,7 +542,7 @@ mod tests {
 
     impl ActorRunLoop<TableActor> for TableActorLoop {
         type DispatchContext = TableActorLoopContext;
-        type Demand = ThreadLocal;
+        type WorkConverter = SendFutureConverter;
     }
 
     struct TableActorLoopContext;

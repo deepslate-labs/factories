@@ -1,6 +1,7 @@
-use crate::actor::event::{DemandSendDriver, EventDriver};
+use crate::actor::event::EventDriver;
 use crate::actor::state::SharedActorState;
-use crate::actor::{Actor, ActorRunLoop, ThreadSafe};
+use crate::actor::work::SendFutureConverter;
+use crate::actor::{Actor, ActorRunLoop};
 use crate::runtime::loop_support::{self, StandardDispatchContext, StandardLoop};
 use crate::spawn::SpawnableRunLoop;
 use core::fmt::{Debug, Formatter};
@@ -14,8 +15,8 @@ use futures::stream::FuturesUnordered;
 /// the loop keeps pulling. Dispatch (lock acquisition) is serialized through the
 /// driver so acquisition order matches the order the driver yields messages.
 ///
-/// The loop demands [`ThreadSafe`] handler futures: its task may migrate
-/// between executor threads.
+/// The loop ships the [`SendFutureConverter`]: handler work is `Send`, since its
+/// task may migrate between executor threads.
 pub struct ConcurrentRunLoop<A: Actor + ?Sized> {
     dispatch_context: StandardDispatchContext<A>,
 }
@@ -30,9 +31,9 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
     /// Schedule by pushing resolved handlers into a work set that runs
     /// concurrently while the next dispatch is pulled; drain on a clean stop,
     /// drop the set on failure.
-    async fn run<D, M>(self, mut mailbox: M, mut driver: DemandSendDriver<D>)
+    async fn run<D, M>(self, mut mailbox: M, mut driver: D)
     where
-        D: EventDriver<A, M>,
+        D: EventDriver<A, M> + Send,
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync,
@@ -46,7 +47,9 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
                 return;
             }
 
-            let pull = self.dispatch_context.next_dispatch(&mut driver, &mut mailbox);
+            let pull = self
+                .dispatch_context
+                .next_dispatch(&mut driver, &mut mailbox);
             futures::pin_mut!(pull);
 
             // An empty work set resolves `next()` with `None` immediately;
@@ -91,7 +94,7 @@ where
 
 impl<A: Actor<RunLoop = Self> + ?Sized> ActorRunLoop<A> for ConcurrentRunLoop<A> {
     type DispatchContext = StandardDispatchContext<A>;
-    type Demand = ThreadSafe;
+    type WorkConverter = SendFutureConverter;
 }
 
 impl<A> SpawnableRunLoop<A> for ConcurrentRunLoop<A>
@@ -112,7 +115,7 @@ where
         I: crate::actor::ActorInit<A> + Send + 'static,
         I::Fut: Send,
         MB: Send + 'static,
-        A::EventDriver: EventDriver<A, MB>,
+        A::EventDriver: EventDriver<A, MB> + Send,
     {
         loop_support::standard_run_with::<A, Self, I, MB>(init, shared, mailbox)
     }

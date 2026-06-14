@@ -5,14 +5,15 @@
 ))]
 
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
-use factories_actor::actor::dispatch::{AssertSend, DispatchedActorMessage, StaticDispatcher};
+use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
 use factories_actor::actor::event::{DefaultMailboxDriver, EventContext, EventDriver};
 use factories_actor::actor::handle::{AskError, Calling, MessageCall, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
+use factories_actor::actor::work::IntoRunLoopWork;
 use factories_actor::actor::{
-    AccessMode, Actor, ActorInit, ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy,
-    MessageHandler, MessageHandlerContext, StaticOnlyBinder, ThreadSafe,
+    AccessMode, Actor, ActorInit, ActorRunLoop, LockStrategy, MessageHandler,
+    MessageHandlerContext, StaticOnlyBinder,
 };
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
 use factories_actor::runtime::kanal::SimpleKanalActorChannel;
@@ -111,7 +112,7 @@ impl MessageHandler<Greet> for Greeter {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Greet, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (guard, message, answer) = ctx.into_parts();
 
@@ -137,7 +138,7 @@ impl MessageHandler<SetGreeting> for Greeter {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, SetGreeting, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (mut guard, message, _) = ctx.into_parts();
             guard.greeting = message.greeting;
@@ -160,7 +161,7 @@ impl MessageHandler<NotSendableMsg> for Greeter {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, NotSendableMsg, Self, Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             drop(ctx);
         }
@@ -457,143 +458,149 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
 
 // -- Custom run loop that does NOT implement SpawnableRunLoop -------------------
 //
-// Proves the assembly contracts are genuinely optional: a hand-crafted
-// sequential loop assembled purely from core primitives.
+// Proves the assembly contracts are genuinely optional, AND that a hand-rolled
+// loop can be written from an *external* crate: it drives the public
+// `dispatch_onto_loop` building block, which yields the run loop's converter
+// work (here a `Send` future) with its bounds intact - the opaque work cell never
+// escapes.
+mod custom_loop_scenario {
+    use super::*;
+    use factories_actor::actor::ActorRunLoopDispatchContext;
+    use factories_actor::actor::work::SendFutureConverter;
 
-struct Counter {
-    count: u32,
-}
-
-struct CounterLock(tokio::sync::Mutex<Counter>);
-
-impl LockStrategy<Counter> for CounterLock {}
-
-impl From<Counter> for CounterLock {
-    fn from(value: Counter) -> Self {
-        Self(tokio::sync::Mutex::new(value))
+    struct Counter {
+        count: u32,
     }
-}
 
-struct CounterExclusive;
+    struct CounterLock(tokio::sync::Mutex<Counter>);
 
-impl AccessMode<Counter> for CounterExclusive {
-    type Guard<'a> = tokio::sync::MutexGuard<'a, Counter>;
+    impl LockStrategy<Counter> for CounterLock {}
 
-    fn acquire<'a>(lock_strategy: &'a CounterLock) -> impl Future<Output = Self::Guard<'a>>
-    where
-        Self: 'a,
-    {
-        lock_strategy.0.lock()
+    impl From<Counter> for CounterLock {
+        fn from(value: Counter) -> Self {
+            Self(tokio::sync::Mutex::new(value))
+        }
     }
-}
 
-declare_actor_rtti!(COUNTER_RTTI, Counter);
+    struct CounterExclusive;
 
-// SAFETY: The RTTI is declared for exactly this type.
-unsafe impl Actor for Counter {
-    const RTTI: &'static ActorRtti = COUNTER_RTTI;
+    impl AccessMode<Counter> for CounterExclusive {
+        type Guard<'a> = tokio::sync::MutexGuard<'a, Counter>;
 
-    type Channel = SimpleKanalActorChannel;
-    type Error = core::convert::Infallible;
-    type RuntimeBinder = StaticOnlyBinder;
-    type LockStrategy = CounterLock;
-    type RunLoop = SequentialLoop;
-    type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
-    type EventDriver = DefaultMailboxDriver;
-}
+        fn acquire<'a>(lock_strategy: &'a CounterLock) -> impl Future<Output = Self::Guard<'a>>
+        where
+            Self: 'a,
+        {
+            lock_strategy.0.lock()
+        }
+    }
 
-#[derive(Debug)]
-struct Increment;
-declare_message!(Increment, u32);
+    declare_actor_rtti!(COUNTER_RTTI, Counter);
 
-impl MessageHandler<Increment> for Counter {
-    type AccessMode = CounterExclusive;
+    // SAFETY: The RTTI is declared for exactly this type.
+    unsafe impl Actor for Counter {
+        const RTTI: &'static ActorRtti = COUNTER_RTTI;
 
-    const DISPATCHER: StaticDispatcher<Counter, Increment> =
-        declare_static_dispatcher!(Counter, Increment);
+        type Channel = SimpleKanalActorChannel;
+        type Error = core::convert::Infallible;
+        type RuntimeBinder = StaticOnlyBinder;
+        type LockStrategy = CounterLock;
+        type RunLoop = SequentialLoop;
+        type TypedHandle = TypedActorHandle<Self>;
+        type SharedStateExtension = ();
+        type EventDriver = DefaultMailboxDriver;
+    }
 
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Increment, Self, CounterExclusive>,
-    ) -> impl Future<Output = ()> + 'a {
-        async move {
-            let (mut guard, _message, answer) = ctx.into_parts();
-            guard.count += 1;
-            if let Some(answer) = answer {
-                let _ = answer.send(guard.count);
+    #[derive(Debug)]
+    struct Increment;
+    declare_message!(Increment, u32);
+
+    impl MessageHandler<Increment> for Counter {
+        type AccessMode = CounterExclusive;
+
+        const DISPATCHER: StaticDispatcher<Counter, Increment> =
+            declare_static_dispatcher!(Counter, Increment);
+
+        fn handle<'a>(
+            ctx: MessageHandlerContext<'a, Increment, Self, CounterExclusive>,
+        ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a
+        {
+            async move {
+                let (mut guard, _message, answer) = ctx.into_parts();
+                guard.count += 1;
+                if let Some(answer) = answer {
+                    let _ = answer.send(guard.count);
+                }
             }
         }
     }
-}
 
-/// A custom run loop: strictly sequential, no work set, no assembly contract.
-struct SequentialLoop;
+    /// A custom run loop: strictly sequential, no work set, no assembly contract.
+    struct SequentialLoop;
 
-struct SequentialDispatchContext {
-    lock: CounterLock,
-    shared: SharedActorState<Counter>,
-}
-
-impl ActorRunLoopDispatchContext<Counter> for SequentialDispatchContext {
-    fn lock_strategy(&self) -> &CounterLock {
-        &self.lock
+    struct SequentialDispatchContext {
+        lock: CounterLock,
+        shared: SharedActorState<Counter>,
     }
 
-    fn shared_state(&self) -> &SharedActorState<Counter> {
-        &self.shared
+    impl ActorRunLoopDispatchContext<Counter> for SequentialDispatchContext {
+        fn lock_strategy(&self) -> &CounterLock {
+            &self.lock
+        }
+
+        fn shared_state(&self) -> &SharedActorState<Counter> {
+            &self.shared
+        }
     }
-}
 
-impl ActorRunLoop<Counter> for SequentialLoop {
-    type DispatchContext = SequentialDispatchContext;
-    type Demand = ThreadSafe;
-}
-
-async fn drive_counter(
-    counter: Counter,
-    shared: SharedActorState<Counter>,
-    mut mailbox: impl ActorMailbox + Send,
-) {
-    let ctx = SequentialDispatchContext {
-        lock: counter.into(),
-        shared,
-    };
-
-    while let Some(message) = mailbox.receive().await {
-        // SAFETY: We only ever assemble this loop for `Counter` actors and we are
-        //         on the actor task.
-        let acquire = unsafe { message.dispatch_onto_loop::<Counter>(&ctx) };
-
-        // SAFETY: `Counter`'s run loop is this loop with a `ThreadSafe` demand,
-        //         so every dispatcher reaching this mailbox was demand-checked.
-        let work = unsafe { AssertSend::new(acquire) }.await;
-
-        // SAFETY: Same anchor as above.
-        unsafe { AssertSend::new(work) }.await;
+    impl ActorRunLoop<Counter> for SequentialLoop {
+        type DispatchContext = SequentialDispatchContext;
+        type WorkConverter = SendFutureConverter;
     }
-}
 
-#[tokio::test]
-async fn custom_loop_without_assembly_contract() {
-    let spawner = TokioTaskSpawner::current();
+    async fn drive_counter(
+        counter: Counter,
+        shared: SharedActorState<Counter>,
+        mut mailbox: impl ActorMailbox + Send,
+    ) {
+        let ctx = SequentialDispatchContext {
+            lock: counter.into(),
+            shared,
+        };
 
-    let (channel, mailbox) =
-        <SimpleKanalActorChannel as CreatableChannel>::create(Default::default());
-    let shared = SharedActorState::<Counter>::new();
+        while let Some(message) = mailbox.receive().await {
+            // SAFETY: We only ever assemble this loop for `Counter` actors and we are
+            //         on the actor task.
+            let work = unsafe { message.dispatch_onto_loop::<Counter>(&ctx) };
 
-    // The custom loop manages its own lifecycle reporting.
-    let loop_shared = shared.clone();
-    let task = spawner.spawn(async move {
-        let _guard = loop_shared.dead_on_drop();
-        loop_shared.transition_running();
-        drive_counter(Counter { count: 0 }, loop_shared.clone(), mailbox).await;
-    });
-    let _ = shared.attach_task(task);
+            // One erased unit of work: acquire-then-handle, folded by the dispatcher
+            // and genuinely `Send` (no reclaim). Drive it to completion.
+            work.await;
+        }
+    }
 
-    let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
+    #[tokio::test]
+    async fn custom_loop_without_assembly_contract() {
+        let spawner = TokioTaskSpawner::current();
 
-    assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 1);
-    assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 2);
+        let (channel, mailbox) =
+            <SimpleKanalActorChannel as CreatableChannel>::create(Default::default());
+        let shared = SharedActorState::<Counter>::new();
+
+        // The custom loop manages its own lifecycle reporting.
+        let loop_shared = shared.clone();
+        let task = spawner.spawn(async move {
+            let _guard = loop_shared.dead_on_drop();
+            loop_shared.transition_running();
+            drive_counter(Counter { count: 0 }, loop_shared.clone(), mailbox).await;
+        });
+        let _ = shared.attach_task(task);
+
+        let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
+
+        assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 1);
+        assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 2);
+    }
 }
 
 // -- Death on dropped handles -----------------------------------------------------
@@ -665,7 +672,7 @@ impl MessageHandler<Bump> for Tally {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Bump, Self, lock::Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (mut guard, message, answer) = ctx.into_parts();
             guard.total += message.0;
@@ -736,7 +743,7 @@ impl MessageHandler<Tick> for Ticker {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Tick, Self, lock::Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             // Grab the (lock-free) extension before decomposing the context.
             let actor_cx = ctx.actor_context();
@@ -765,7 +772,7 @@ impl MessageHandler<GetTotal> for Ticker {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, GetTotal, Self, lock::Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (guard, _message, answer) = ctx.into_parts();
             if let Some(answer) = answer {
@@ -783,7 +790,7 @@ impl From<&Ticker> for TickSource {
     }
 }
 
-impl<M: ActorMailbox> EventDriver<Ticker, M> for TickSource {
+impl<M: ActorMailbox + Send> EventDriver<Ticker, M> for TickSource {
     fn next<'a>(
         &'a mut self,
         cx: EventContext<'a, Ticker>,

@@ -176,5 +176,9 @@ pub fn messages(
     attrs: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    messages::messages(attrs.into(), syn::parse_macro_input!(input as syn::ItemImpl)).into()
+    messages::messages(
+        attrs.into(),
+        syn::parse_macro_input!(input as syn::ItemImpl),
+    )
+    .into()
 }

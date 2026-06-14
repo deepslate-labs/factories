@@ -242,11 +242,12 @@ mod tests {
     use super::*;
     use crate::actor::channel::{ActorChannel, ActorChannelSendResult, ActorChannelSendable};
     use crate::actor::dispatch::DispatchedActorMessage;
-    use crate::actor::rtti::ActorRtti;
-    use crate::actor::{ActorRunLoop, ActorRunLoopDispatchContext, StaticOnlyBinder, ThreadLocal};
-    use futures::FutureExt;
     use crate::actor::event::DefaultMailboxDriver;
     use crate::actor::handle::TypedActorHandle;
+    use crate::actor::rtti::ActorRtti;
+    use crate::actor::work::SendFutureConverter;
+    use crate::actor::{ActorRunLoop, ActorRunLoopDispatchContext, StaticOnlyBinder};
+    use futures::FutureExt;
     // Minimal actor whose run loop (unsafely) claims serialized dispatch. It is
     // never spawned; the tests only exercise the strategy directly.
 
@@ -278,7 +279,7 @@ mod tests {
 
     impl ActorRunLoop<LockActor> for LockActorLoop {
         type DispatchContext = LockActorLoopContext;
-        type Demand = ThreadLocal;
+        type WorkConverter = SendFutureConverter;
     }
 
     // SAFETY: This loop never dispatches anything at all - trivially serialized.

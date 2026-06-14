@@ -35,6 +35,6 @@ where
         I: ActorInit<A> + Send + 'static,
         I::Fut: Send,
         MB: Send + 'static,
-        A::EventDriver: EventDriver<A, MB>,
+        A::EventDriver: EventDriver<A, MB> + Send,
         A: Sized;
 }

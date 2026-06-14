@@ -4,7 +4,10 @@
 //! `Defaulted` and `Customized` double as fixtures for the other modules.
 
 use factories_actor::actor::dispatch::StaticDispatcher;
-use factories_actor::actor::{Actor, MessageHandler, MessageHandlerContext, StaticOnlyBinder};
+use factories_actor::actor::work::IntoRunLoopWork;
+use factories_actor::actor::{
+    Actor, ActorRunLoop, MessageHandler, MessageHandlerContext, StaticOnlyBinder,
+};
 use factories_actor::declare_static_dispatcher;
 use factories_actor::message::Message;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
@@ -39,7 +42,7 @@ impl MessageHandler<Get> for Defaulted {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Get, Self, lock::Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (guard, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
@@ -83,7 +86,7 @@ impl MessageHandler<Hit> for Customized {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, Hit, Self, lock::Exclusive>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             let (mut guard, _, answer) = ctx.into_parts();
             guard.hits += 1;
@@ -152,7 +155,7 @@ async fn derived_default_kit_roundtrip() {
 #[tokio::test]
 async fn spawn_returns_the_generated_typed_handle() {
     let spawner = TokioTaskSpawner::current();
-    
+
     let handle = ActorLauncher::default()
         .spawn_ready(&spawner, Defaulted { value: 9 })
         .await

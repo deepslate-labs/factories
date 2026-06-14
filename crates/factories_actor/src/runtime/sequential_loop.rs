@@ -1,6 +1,7 @@
-use crate::actor::event::{DemandSendDriver, EventDriver};
+use crate::actor::event::EventDriver;
 use crate::actor::state::SharedActorState;
-use crate::actor::{Actor, ActorRunLoop, SerializedDispatch, ThreadSafe};
+use crate::actor::work::SendFutureConverter;
+use crate::actor::{Actor, ActorRunLoop, SerializedDispatch};
 use crate::runtime::loop_support::{self, StandardDispatchContext, StandardLoop};
 use crate::spawn::SpawnableRunLoop;
 use core::fmt::{Debug, Formatter};
@@ -12,8 +13,8 @@ use core::fmt::{Debug, Formatter};
 /// provider, enabling lock-eliding strategies such as
 /// [`UnguardedLock`](crate::runtime::lock::UnguardedLock).
 ///
-/// The loop demands [`ThreadSafe`] handler futures: its task may migrate
-/// between executor threads. Dispatches still never overlap.
+/// The loop ships the [`SendFutureConverter`]: handler work is `Send` (its task
+/// may migrate between executor threads). Dispatches still never overlap.
 pub struct SequentialRunLoop<A: Actor + ?Sized> {
     dispatch_context: StandardDispatchContext<A>,
 }
@@ -27,9 +28,10 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
 
     /// Schedule by awaiting each handler to completion before pulling the next
     /// dispatch - serialized, so the actor state needs no real lock.
-    async fn run<D, M>(self, mut mailbox: M, mut driver: DemandSendDriver<D>)
+    async fn run<D, M>(self, mut mailbox: M, mut driver: D)
     where
-        D: EventDriver<A, M>,
+        D: EventDriver<A, M> + Send,
+        M: Send + 'static,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync,
     {
@@ -65,7 +67,7 @@ where
 
 impl<A: Actor<RunLoop = Self> + ?Sized> ActorRunLoop<A> for SequentialRunLoop<A> {
     type DispatchContext = StandardDispatchContext<A>;
-    type Demand = ThreadSafe;
+    type WorkConverter = SendFutureConverter;
 }
 
 // SAFETY: `run` drives each dispatch - the acquire future and then the resolved
@@ -92,7 +94,7 @@ where
         I: crate::actor::ActorInit<A> + Send + 'static,
         I::Fut: Send,
         MB: Send + 'static,
-        A::EventDriver: EventDriver<A, MB>,
+        A::EventDriver: EventDriver<A, MB> + Send,
     {
         loop_support::standard_run_with::<A, Self, I, MB>(init, shared, mailbox)
     }

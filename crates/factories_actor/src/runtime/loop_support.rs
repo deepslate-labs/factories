@@ -7,12 +7,21 @@
 //! bricks factor out the rest, so the built-in loops (and any user loop) shrink
 //! to their scheduling structure.
 
-use crate::actor::dispatch::{AssertSend, BoxedHandlerFuture};
-use crate::actor::event::{DemandSendDriver, EventContext, EventDriver};
+use crate::actor::event::{EventContext, EventDriver};
 use crate::actor::state::SharedActorState;
+use crate::actor::work::FutureWorkConverter;
 use crate::actor::{Actor, ActorInit, ActorRunLoop, ActorRunLoopDispatchContext};
+use alloc::boxed::Box;
 use core::fmt::{Debug, Formatter};
 use core::future::Future;
+use core::pin::Pin;
+
+/// The unit of work the standard run loops drive: a `Send` future. The opaque
+/// [`ErasedWork`](crate::actor::work::ErasedWork) cell is unpacked to the
+/// converter's `Erased` and then viewed as this concrete future by
+/// [`next_dispatch`](StandardDispatchContext::next_dispatch), so the loops never
+/// touch the cell or the GAT directly.
+pub type StandardWork<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// The dispatch context shared by the standard run loops: the actor's lock
 /// strategy plus its shared state.
@@ -40,44 +49,39 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
     }
 
     /// One dispatch turn: ask the `driver` for the next message - it owns the
-    /// mailbox-polling decision - and resolve its handler future, ready to run.
-    /// `None` means the driver stopped the loop.
-    ///
-    /// This is the brick a run loop dispatches through: it bundles the
-    /// event-driver turn, the lock acquisition, and the `Send` reclaim, so a loop
-    /// only decides *how to schedule* the returned handler future.
+    /// mailbox-polling decision - and produce the [`StandardWork`] that acquires
+    /// the lock and runs the handler, ready to drive. `None` means the driver
+    /// stopped the loop.
     pub fn next_dispatch<'ctx, 'turn, D, M>(
         &'ctx self,
-        driver: &'turn mut DemandSendDriver<D>,
+        driver: &'turn mut D,
         mailbox: &'turn mut M,
-    ) -> impl Future<Output = Option<AssertSend<BoxedHandlerFuture<'ctx>>>> + use<'ctx, 'turn, A, D, M>
+    ) -> impl Future<Output = Option<StandardWork<'ctx>>> + use<'ctx, 'turn, A, D, M>
     where
-        // The handler borrows the context (`'ctx`); the driver/mailbox borrow
+        // The work borrows the context (`'ctx`); the driver/mailbox borrow
         // (`'turn`) is released when this future completes - so a concurrent loop
-        // can hold the resolved handler in a work set without pinning the driver.
+        // can hold the work in a set without pinning the driver.
         'ctx: 'turn,
-        D: EventDriver<A, M>,
+        D: EventDriver<A, M> + Send,
         A::RunLoop: ActorRunLoop<A, DispatchContext = Self>,
+        <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
     {
         async move {
             let cx = EventContext::new(&self.lock_strategy, &self.shared);
 
-            // SAFETY: demand obligation - the driver's `next` future satisfies
-            //         the loop's demand (the `EventDriver` impl / `#[event_source]`
-            //         derive demand-checks it; the driver value is reclaimed by
-            //         `DemandSendDriver`).
-            let message = unsafe { AssertSend::new(driver.0.next(cx, mailbox)) }.await?;
+            // `Send`-readable by the `EventDriver::next` bound - no reclaim.
+            let message = driver.next(cx, mailbox).await?;
 
             // SAFETY: the message was produced by our own driver while we are in
             //         the actor loop, so it can be dispatched onto our loop, and
             //         `self` is exactly this loop's `DispatchContext`.
-            let acquire = unsafe { message.dispatch_onto_loop::<A>(self) };
+            let erased = unsafe { message.dispatch_onto_loop::<A>(self) };
 
-            // SAFETY: demand obligation - the dispatcher was demand-checked
-            //         against the loop's `ThreadSafe` demand at its declaration
-            //         site, so its acquire/handler futures are `Send`.
-            let handler = unsafe { AssertSend::new(acquire) }.await;
-            Some(unsafe { AssertSend::new(handler) })
+            // Unpacked to the converter's `Erased`; the standard loops drive it as
+            // a `Send` future. The opaque cell is gone by here.
+            Some(<<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+                erased,
+            ))
         }
     }
 }
@@ -117,12 +121,13 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
     /// Drive the loop. This is the loop's whole identity - how it schedules the
     /// handler futures produced each turn by
     /// [`StandardDispatchContext::next_dispatch`].
-    fn run<D, M>(self, mailbox: M, driver: DemandSendDriver<D>) -> impl Future<Output = ()> + Send
+    fn run<D, M>(self, mailbox: M, driver: D) -> impl Future<Output = ()> + Send
     where
-        D: EventDriver<A, M>,
+        D: EventDriver<A, M> + Send,
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
-        A::Error: Send + Sync;
+        A::Error: Send + Sync,
+        <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter;
 }
 
 /// The standard spawn scaffolding: drop-guard, init, driver selection, then hand
@@ -139,10 +144,11 @@ where
     L: StandardLoop<A>,
     I: ActorInit<A> + Send + 'static,
     I::Fut: Send,
-    A::EventDriver: EventDriver<A, M>,
+    A::EventDriver: EventDriver<A, M> + Send,
     A::LockStrategy: Send + Sync,
     A::Error: Send + Sync + 'static,
-    M: Send + 'static
+    M: Send + 'static,
+    <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
 {
     async move {
         // Loop exit, handler panic and task abort all transition to `Dead`.
@@ -150,8 +156,8 @@ where
 
         // Scope the (possibly `!Send`) actor so it is provably gone - moved into
         // its lock - before the loop's first await. The driver it yields is the
-        // named `A::EventDriver` (does not borrow it); its `Send` is reclaimed by
-        // `DemandSendDriver`.
+        // named `A::EventDriver`, which is `Send` by the bound above (no reclaim,
+        // no `unsafe` - it never was uncheckable, the value is a named type).
         let lock_strategy;
         let driver;
         {
@@ -161,11 +167,7 @@ where
 
             // Build the driver from the actor (seedable via its `From<&Actor>`
             // impl), before the actor moves into its lock.
-            // SAFETY: standard loops are `ThreadSafe`; the driver upholds that
-            //         demand (the `#[event_source]` derive demand-checks the
-            //         driver and its `next` future; a hand-written driver upholds
-            //         it the same way).
-            driver = unsafe { DemandSendDriver::new(A::EventDriver::from(&actor)) };
+            driver = A::EventDriver::from(&actor);
             lock_strategy = actor.into();
         }
 

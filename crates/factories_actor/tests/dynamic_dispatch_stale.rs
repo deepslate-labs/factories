@@ -9,9 +9,10 @@ use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher}
 use factories_actor::actor::event::DefaultMailboxDriver;
 use factories_actor::actor::handle::TypedActorHandle;
 use factories_actor::actor::rtti::ActorRtti;
+use factories_actor::actor::work::{IntoRunLoopWork, SendFutureConverter};
 use factories_actor::actor::{
     AccessMode, Actor, ActorRunLoop, ActorRunLoopDispatchContext, ActorRuntimeBinder, LockStrategy,
-    MessageHandler, MessageHandlerContext, ThreadLocal,
+    MessageHandler, MessageHandlerContext,
 };
 use factories_actor::factories_collect::GlobalCollectionEntry;
 use factories_actor::message::Message;
@@ -55,7 +56,7 @@ struct StaleLoop;
 
 impl ActorRunLoop<StaleActor> for StaleLoop {
     type DispatchContext = StaleLoopContext;
-    type Demand = ThreadLocal;
+    type WorkConverter = SendFutureConverter;
 }
 
 struct StaleLoopContext;
@@ -114,7 +115,7 @@ impl MessageHandler<EarlyMsg> for StaleActor {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, EarlyMsg, Self, ReadAccess>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             drop(ctx);
         }
@@ -136,7 +137,7 @@ impl MessageHandler<LateMsg> for StaleActor {
 
     fn handle<'a>(
         ctx: MessageHandlerContext<'a, LateMsg, Self, ReadAccess>,
-    ) -> impl Future<Output = ()> + 'a {
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
         async move {
             drop(ctx);
         }

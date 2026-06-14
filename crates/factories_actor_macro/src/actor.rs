@@ -76,7 +76,8 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let (channel_default, error_default, binder_default, lock_default, run_loop_default) =
         match &config.template {
             Some(template) => {
-                let template = quote!(<#template as ::factories_actor::runtime::template::ActorTemplate>);
+                let template =
+                    quote!(<#template as ::factories_actor::runtime::template::ActorTemplate>);
                 (
                     quote!(#template::Channel),
                     quote!(#template::Error),
@@ -112,7 +113,11 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     // by the public `EventDriver` associated type, so it cannot be private); its
     // impls stay in the `const _` block.
     let (event_driver, event_loop_decl, event_loop_items) = match config.event_driver {
-        Some(explicit) => (explicit.into_token_stream(), TokenStream::new(), TokenStream::new()),
+        Some(explicit) => (
+            explicit.into_token_stream(),
+            TokenStream::new(),
+            TokenStream::new(),
+        ),
         None => {
             let loop_ident = format_ident!("{}EventLoop", ident);
             let loop_doc = format!(
@@ -227,10 +232,18 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
 fn generated_event_loop(ident: &Ident, loop_ident: &Ident) -> TokenStream {
     let dispatched = quote!(::factories_actor::actor::dispatch::DispatchedActorMessage);
     let event_context = quote!(::factories_actor::actor::event::EventContext);
-    let mailbox_bound = quote!(::factories_actor::spawn::ActorMailbox);
+    let mailbox = quote!(::factories_actor::spawn::ActorMailbox);
     let event_source = quote!(::factories_actor::actor::event::ActorEventSource);
+    let actor = quote!(::factories_actor::actor::Actor);
+    let send = quote!(::core::marker::Send);
     let output = quote!(::core::option::Option<#dispatched>);
     let future = quote!(::core::future::Future<Output = #output>);
+
+    // The loop yields `Send` futures (the standard loops are work-stealing). The
+    // mailbox arm pulls from a `Send` mailbox via `receive()` (whose future is
+    // `Send`-readable); the source arm is generic in `__A` (so the gating `__A:
+    // ActorEventSource` is a real bound, not trivial) and forwards `next_event`'s
+    // already-`Send` future. `__A` resolves to `#ident` at the call.
 
     quote! {
         impl ::core::convert::From<&#ident> for #loop_ident {
@@ -241,30 +254,33 @@ fn generated_event_loop(ident: &Ident, loop_ident: &Ident) -> TokenStream {
 
         impl<__M> ::factories_actor::actor::event::EventDriver<#ident, __M> for #loop_ident
         where
-            __M: #mailbox_bound,
+            __M: #mailbox + ::core::marker::Send,
         {
             fn next<'__event>(
                 &'__event mut self,
                 cx: #event_context<'__event, #ident>,
                 mailbox: &'__event mut __M,
-            ) -> impl #future + '__event {
+            ) -> impl #future + #send + '__event {
                 // Higher priority (impl for `&__Probe`, one fewer autoderef):
-                // gated on the actor having an event source.
-                trait __ViaSource<__A: ::factories_actor::actor::Actor> {
-                    fn __select<'__a, __MB: #mailbox_bound>(
+                // gated on the actor having an event source. Generic in `__A`,
+                // forwarding `next_event`'s declared demand bound.
+                trait __ViaSource<__A: #actor> {
+                    fn __select<'__a, __MB: #mailbox + ::core::marker::Send>(
                         self,
                         cx: #event_context<'__a, __A>,
                         mailbox: &'__a mut __MB,
-                    ) -> impl #future + '__a;
+                    ) -> impl #future + #send + '__a;
                 }
 
                 // Fallback (impl for bare `__Probe`): pull from the mailbox.
-                trait __ViaMailbox<__A: ::factories_actor::actor::Actor> {
-                    fn __select<'__a, __MB: #mailbox_bound>(
+                // Concrete in `#ident` so `receive()`'s `Send` future discharges
+                // the demand bound against the *concrete* demand.
+                trait __ViaMailbox {
+                    fn __select<'__a, __MB: #mailbox + ::core::marker::Send>(
                         self,
-                        cx: #event_context<'__a, __A>,
+                        cx: #event_context<'__a, #ident>,
                         mailbox: &'__a mut __MB,
-                    ) -> impl #future + '__a;
+                    ) -> impl #future + #send + '__a;
                 }
 
                 // A zero-sized carrier for the actor type. Copy by hand so the
@@ -282,21 +298,21 @@ fn generated_event_loop(ident: &Ident, loop_ident: &Ident) -> TokenStream {
                 where
                     __A: #event_source,
                 {
-                    fn __select<'__a, __MB: #mailbox_bound>(
+                    fn __select<'__a, __MB: #mailbox + ::core::marker::Send>(
                         self,
                         cx: #event_context<'__a, __A>,
                         mailbox: &'__a mut __MB,
-                    ) -> impl #future + '__a {
+                    ) -> impl #future + #send + '__a {
                         <__A as #event_source>::next_event(cx, mailbox)
                     }
                 }
 
-                impl<__A: ::factories_actor::actor::Actor> __ViaMailbox<__A> for __Probe<__A> {
-                    fn __select<'__a, __MB: #mailbox_bound>(
+                impl __ViaMailbox for __Probe<#ident> {
+                    fn __select<'__a, __MB: #mailbox + ::core::marker::Send>(
                         self,
-                        _cx: #event_context<'__a, __A>,
+                        _cx: #event_context<'__a, #ident>,
                         mailbox: &'__a mut __MB,
-                    ) -> impl #future + '__a {
+                    ) -> impl #future + #send + '__a {
                         mailbox.receive()
                     }
                 }

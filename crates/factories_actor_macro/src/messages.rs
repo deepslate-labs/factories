@@ -776,7 +776,10 @@ fn expand_handler(
 
             fn handle<'a>(
                 ctx: ::factories_actor::actor::MessageHandlerContext<'a, #message_ty, Self, #access>,
-            ) -> impl ::core::future::Future<Output = ()> + 'a {
+            ) -> impl ::factories_actor::actor::work::IntoRunLoopWork<
+                <<Self as ::factories_actor::actor::Actor>::RunLoop
+                    as ::factories_actor::actor::ActorRunLoop<Self>>::WorkConverter,
+            > + 'a {
                 async move {
                     #body
                 }

@@ -1,34 +1,12 @@
+use crate::actor::work::{ErasedWork, WorkConverter};
 use crate::message::envelope::MessageEnvelope;
-use alloc::boxed::Box;
 use core::marker::PhantomData;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 
-/// The handler future returned once lock acquisition has completed.
-///
-/// Run loops push this into their concurrent work set after awaiting the
-/// outer [`BoxedAcquireFuture`].
-///
-/// Intentionally NOT `Send`: thread-safety of handler futures is the run
-/// loop's concern, expressed through its [`crate::actor::DispatchDemand`] and
-/// enforced at dispatcher declaration sites. Run loops that demand
-/// [`crate::actor::ThreadSafe`] futures may reclaim the erased proof via
-/// [`AssertSend`].
-pub type BoxedHandlerFuture<'ctx> = Pin<Box<dyn Future<Output = ()> + 'ctx>>;
-
-/// The acquire-then-build future returned directly by a dispatcher.
-///
-/// Awaiting this drives lock acquisition. The result is a [`BoxedHandlerFuture`]
-/// that holds the lock guard and runs the user's `MessageHandler::handle`. Run
-/// loops await this inline with `mailbox.next()` so acquisition order matches
-/// mailbox order; the resolved handler future then runs concurrently with
-/// other in-flight handlers.
-pub type BoxedAcquireFuture<'ctx> = Pin<Box<dyn Future<Output = BoxedHandlerFuture<'ctx>> + 'ctx>>;
-
+/// The function a dispatcher casts the erased context back through.
 pub type ActorMessageDispatcherHandler = for<'ctx> unsafe fn(
     DispatchContextPtr<'ctx>,
     DispatchedActorMessageContext,
-) -> BoxedAcquireFuture<'ctx>;
+) -> ErasedWork<'ctx>;
 
 /// Type-erased pointer to an actor's dispatch context, tagged with the lifetime
 /// during which the pointee is valid.
@@ -74,12 +52,8 @@ impl ActorMessageDispatcher {
         Self { handler }
     }
 
-    /// Invoke the dispatcher, producing an outer future that drives lock
-    /// acquisition and resolves to the inner handler future.
-    ///
-    /// The two-tier shape lets the run loop sequence lock acquisition through
-    /// the mailbox reader: await the outer inline with `mailbox.next()`, then
-    /// push the resolved handler future into the concurrent work set.
+    /// Invoke the dispatcher, producing the [`ErasedWork`] that acquires the
+    /// lock and runs the handler. The run loop drives this work to completion.
     ///
     /// # Safety
     /// - `dispatch_context` must have been constructed from a reference to the
@@ -87,11 +61,11 @@ impl ActorMessageDispatcher {
     /// - The envelope in `message_context` must carry a message of the type this
     ///   dispatcher was bound for.
     /// - The caller must invoke this on the actor's thread.
-    pub unsafe fn invoke(
+    pub(crate) unsafe fn invoke(
         self,
         dispatch_context: DispatchContextPtr,
         message_context: DispatchedActorMessageContext,
-    ) -> BoxedAcquireFuture {
+    ) -> ErasedWork {
         unsafe { (self.handler)(dispatch_context, message_context) }
     }
 }
@@ -108,7 +82,7 @@ impl core::fmt::Debug for ActorMessageDispatcher {
 //         at the call site via the safety contract on `invoke`.
 unsafe impl Send for ActorMessageDispatcher {}
 
-// SAFETY: Same as above — a fn pointer is trivially Sync.
+// SAFETY: Same as above - a fn pointer is trivially Sync.
 unsafe impl Sync for ActorMessageDispatcher {}
 
 /// An [`ActorMessageDispatcher`] stamped with the actor/message pair it was
@@ -128,7 +102,8 @@ impl<A: ?Sized, M: ?Sized> StaticDispatcher<A, M> {
     /// # Safety
     /// The caller must ensure that the dispatcher
     /// - dispatches envelopes carrying messages of type `M` to actors of type `A`, and
-    /// - satisfies the [`crate::actor::DispatchDemand`] of `A`'s run loop.
+    /// - erases the dispatch through `A`'s run loop's
+    ///   [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter).
     ///
     /// Use [`declare_static_dispatcher!`](crate::declare_static_dispatcher), which
     /// upholds both by construction.
@@ -156,20 +131,22 @@ impl<A: ?Sized, M: ?Sized> core::fmt::Debug for StaticDispatcher<A, M> {
 /// Declare the [`crate::actor::MessageHandler::DISPATCHER`] constant for an
 /// actor/message pair.
 ///
-/// Expands to a dispatcher whose body is checked against the
-/// [`crate::actor::DispatchDemand`] of the actor's run loop *at this declaration
-/// site*, where the concrete handler future types are known and their auto traits
-/// leak. A handler future that doesn't satisfy the demand (e.g. a `!Send` future
-/// on a [`crate::actor::ThreadSafe`] loop) fails to compile right here.
+/// Expands to a dispatcher that folds lock acquisition and the handler into one
+/// acquire-then-handle composite and erases it through the actor's run loop's
+/// [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter) *at this
+/// declaration site*, where the concrete types are known. The converter's
+/// requirement is checked here: under a work-stealing loop's
+/// [`SendFutureConverter`](crate::actor::work::SendFutureConverter) a handler
+/// that produces a `!Send` future (or a `!Send` lock guard) fails to compile.
 #[macro_export]
 macro_rules! declare_static_dispatcher {
     ($actor:ty, $message:ty) => {{
         unsafe fn invoke<'ctx>(
             dispatch_context: $crate::actor::dispatch::DispatchContextPtr<'ctx>,
             message_context: $crate::actor::dispatch::DispatchedActorMessageContext,
-        ) -> $crate::actor::dispatch::BoxedAcquireFuture<'ctx> {
+        ) -> $crate::actor::work::ErasedWork<'ctx> {
             type RunLoop = <$actor as $crate::actor::Actor>::RunLoop;
-            type Demand = <RunLoop as $crate::actor::ActorRunLoop<$actor>>::Demand;
+            type Converter = <RunLoop as $crate::actor::ActorRunLoop<$actor>>::WorkConverter;
             type Mode = <$actor as $crate::actor::MessageHandler<$message>>::AccessMode;
 
             // SAFETY: The `StaticDispatcher` contract guarantees this dispatcher is
@@ -179,7 +156,9 @@ macro_rules! declare_static_dispatcher {
                     .cast_as::<<RunLoop as $crate::actor::ActorRunLoop<$actor>>::DispatchContext>()
             };
 
-            let acquire = $crate::actor::demand_check::<Demand, _>(async move {
+            // The whole dispatch as one future: acquire the lock, build the
+            // handler context, run the handler's work to completion.
+            let composite = async move {
                 let guard = <Mode as $crate::actor::AccessMode<$actor>>::acquire(
                     $crate::actor::ActorRunLoopDispatchContext::lock_strategy(dispatch_context),
                 )
@@ -197,22 +176,24 @@ macro_rules! declare_static_dispatcher {
                     )
                 };
 
-                // Calling `handle` only constructs the future; it runs once polled.
-                // The demand check here is THE enforcement point of the run loop's
-                // demand on the concrete handler future.
-                let handler = $crate::actor::demand_check::<Demand, _>(span.instrument(
-                    <$actor as $crate::actor::MessageHandler<$message>>::handle(ctx),
-                ));
+                // `handle` returns this loop's `IntoRunLoopWork`; erase it through
+                // the loop's converter and drive it. The converter's `Erased` is a
+                // future here (the standard loops' protocol), so awaiting it is the
+                // drive; a non-future converter simply can't reach this macro.
+                let work = <$actor as $crate::actor::MessageHandler<$message>>::handle(ctx);
+                let handler = $crate::actor::work::into_work::<Converter, _>(work);
+                span.instrument(handler).await;
+            };
 
-                $crate::__private::Box::pin(handler)
-                    as $crate::actor::dispatch::BoxedHandlerFuture<'ctx>
-            });
-
-            $crate::__private::Box::pin(acquire)
+            // Erase the acquire-then-handle composite through the same converter
+            // (proving its `Send`-ness here, concretely), then pack it into the
+            // opaque cell that crosses the uniform dispatcher fn-pointer.
+            let erased = $crate::actor::work::into_work::<Converter, _>(composite);
+            $crate::actor::work::ErasedWork::pack(erased)
         }
 
         // SAFETY: `invoke` above is generated for exactly this actor/message pair
-        //         and demand-checked against the actor's run loop.
+        //         and erased through the actor's run loop's converter.
         unsafe {
             $crate::actor::dispatch::StaticDispatcher::<$actor, $message>::new_unchecked(
                 $crate::actor::dispatch::ActorMessageDispatcher::new(invoke),
@@ -234,9 +215,9 @@ impl DispatchedActorMessage {
     ///
     /// # Safety
     /// The dispatcher must be able to dispatch the envelope in `context` to the
-    /// actor this message will be delivered to, and must satisfy the
-    /// [`crate::actor::DispatchDemand`] of that actor's run loop. Dispatchers
-    /// obtained from [`crate::actor::MessageHandler::DISPATCHER`] or a
+    /// actor this message will be delivered to, erasing it through that actor's
+    /// run loop's [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter).
+    /// Dispatchers obtained from [`crate::actor::MessageHandler::DISPATCHER`] or a
     /// [`crate::actor::ActorRuntimeBinder`] uphold this by their own contracts.
     pub const unsafe fn new(
         dispatcher: ActorMessageDispatcher,
@@ -258,10 +239,18 @@ impl DispatchedActorMessage {
         (self.dispatcher, self.context)
     }
 
-    /// Dispatch the message onto the actor loop.
+    /// Dispatch the message onto the actor loop, yielding the run loop's work
+    /// (its converter's [`Erased`](crate::actor::work::WorkConverter::Erased)) -
+    /// for the standard loops, a `Send` future the loop drives.
+    ///
+    /// This is the building block for hand-rolled run loops: the opaque work cell
+    /// stays internal (built and unpacked here, synchronously), and the caller
+    /// gets the converter's typed work with its real bounds intact.
     ///
     /// # Safety
-    /// The type A must be the target type to which the actor message was bound.
+    /// `A` must be the target type the actor message was bound for - the
+    /// dispatcher then packed `A`'s converter's `Erased`, so recovering it as that
+    /// type is sound. (A mismatched `A` is type confusion.)
     ///
     /// In addition to that must this method be called in an appropriate dispatch context. For most
     /// actors this means in the actor dispatch loop, unless pass through messaging is enabled
@@ -269,10 +258,17 @@ impl DispatchedActorMessage {
     pub unsafe fn dispatch_onto_loop<A: crate::actor::Actor + ?Sized>(
         self,
         dispatch_context: &<A::RunLoop as crate::actor::ActorRunLoop<A>>::DispatchContext,
-    ) -> BoxedAcquireFuture<'_> {
+    ) -> <<A::RunLoop as crate::actor::ActorRunLoop<A>>::WorkConverter as WorkConverter>::Erased<'_>
+    {
         let (dispatcher, message_context) = self.into_parts();
 
-        unsafe { dispatcher.invoke(DispatchContextPtr::new(dispatch_context), message_context) }
+        let cell = unsafe {
+            dispatcher.invoke(DispatchContextPtr::new(dispatch_context), message_context)
+        };
+
+        // SAFETY: the dispatcher was bound for `A` (this method's contract), so it
+        //         packed `A`'s run loop's converter's `Erased` into the cell.
+        unsafe { cell.unpack() }
     }
 }
 
@@ -345,49 +341,5 @@ impl HandlerSpan {
     /// No-op without the `tracing` feature.
     pub fn instrument<F: Future>(self, fut: F) -> F {
         fut
-    }
-}
-
-/// Future wrapper that unsafely asserts the inner future is `Send`.
-///
-/// This is the tool run loops use to reclaim the demand proof that boxing into
-/// [`BoxedHandlerFuture`] erased: dispatchers are checked against the loop's
-/// [`crate::actor::DispatchDemand`] at their declaration sites, but the erased
-/// box type carries no `Send` bound.
-///
-/// # Safety
-/// Constructing this is `unsafe`: the caller asserts the inner future is in fact
-/// safe to send between threads. For erased dispatch futures of an actor whose
-/// run loop demands [`crate::actor::ThreadSafe`], this is anchored by:
-/// - statically declared dispatchers being demand-checked at declaration
-///   ([`declare_static_dispatcher!`](crate::declare_static_dispatcher)),
-/// - dynamically bound dispatchers being covered by the
-///   [`crate::actor::ActorRuntimeBinder`] contract, and
-/// - [`DispatchedActorMessage::new`] being unsafe with the same obligation,
-///   so safe code cannot forge unchecked deliveries.
-#[pin_project::pin_project]
-pub struct AssertSend<F> {
-    #[pin]
-    inner: F,
-}
-
-impl<F> AssertSend<F> {
-    /// Assert that `inner` is safe to send between threads.
-    ///
-    /// # Safety
-    /// See the type-level documentation.
-    pub const unsafe fn new(inner: F) -> Self {
-        Self { inner }
-    }
-}
-
-// SAFETY: Asserted by the caller of `AssertSend::new`.
-unsafe impl<F> Send for AssertSend<F> {}
-
-impl<F: Future> Future for AssertSend<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.project().inner.poll(cx)
     }
 }

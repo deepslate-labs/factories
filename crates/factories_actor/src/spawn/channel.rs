@@ -12,7 +12,13 @@ pub trait CreatableChannel: ActorChannel + Sized {
     type CreationOptions;
 
     /// The mailbox type of this channel.
-    type Mailbox: ActorMailbox + Send + 'static;
+    ///
+    /// Deliberately *not* bounded `ActorMailbox`: whether the mailbox is even an
+    /// `ActorMailbox` is the run loop's concern, pulled in by the loop's
+    /// `EventDriver`/`ActorMailbox` bounds at the assembly boundary. `Send` stays
+    /// because generic assembly hands the loop future to a (potentially
+    /// work-stealing) spawner.
+    type Mailbox: Send + 'static;
 
     /// Create the channel with the given options.
     fn create(options: Self::CreationOptions) -> (Self, Self::Mailbox);
