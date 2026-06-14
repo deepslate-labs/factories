@@ -8,9 +8,12 @@
 //! to their scheduling structure.
 
 use crate::actor::event::{EventContext, EventDriver};
+use crate::actor::lifecycle::StopReason;
 use crate::actor::state::SharedActorState;
-use crate::actor::work::FutureWorkConverter;
-use crate::actor::{Actor, ActorInit, ActorRunLoop, ActorRunLoopDispatchContext};
+use crate::actor::work::{FutureWorkConverter, into_work};
+use crate::actor::{
+    Actor, ActorContext, ActorInit, ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy,
+};
 use alloc::boxed::Box;
 use core::fmt::{Debug, Formatter};
 use core::future::Future;
@@ -84,6 +87,40 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
             ))
         }
     }
+
+    /// Run the actor's stop hook and consume the context.
+    ///
+    /// Called once the loop has quiesced (no more dispatches in flight), so the
+    /// context is the actor's sole owner and can reclaim it by value from the
+    /// lock. The stop reason is derived from whether an error was recorded.
+    pub async fn run_stop_hook(self)
+    where
+        A: Sized + Send,
+        <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
+    {
+        let StandardDispatchContext {
+            lock_strategy,
+            shared,
+        } = self;
+
+        // Observable transition; a no-op if the actor never reached `Running`.
+        shared.transition_stopping();
+
+        let reason = match shared.get_error() {
+            Some(error) => StopReason::Failed(error),
+            None => StopReason::Finished,
+        };
+
+        // Sole owner now: reclaim the actor by value for the by-value stop hook,
+        // erase its work through the loop's converter, and drive it.
+        let actor = lock_strategy.into_inner();
+        let cx = ActorContext::new(&shared);
+        let stop = into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(
+            actor.on_stop(reason, cx),
+        );
+        <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(stop)
+            .await;
+    }
 }
 
 impl<A: Actor + ?Sized> ActorRunLoopDispatchContext<A> for StandardDispatchContext<A> {
@@ -121,8 +158,13 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
     /// Drive the loop. This is the loop's whole identity - how it schedules the
     /// handler futures produced each turn by
     /// [`StandardDispatchContext::next_dispatch`].
+    ///
+    /// Implementations must run the stop hook via
+    /// [`StandardDispatchContext::run_stop_hook`] once the loop has quiesced,
+    /// whether it drained cleanly or a handler failed the actor.
     fn run<D, M>(self, mailbox: M, driver: D) -> impl Future<Output = ()> + Send
     where
+        A: Sized + Send,
         D: EventDriver<A, M> + Send,
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
@@ -140,7 +182,7 @@ pub fn standard_run_with<A, L, I, M>(
     mailbox: M,
 ) -> impl Future<Output = ()> + Send + 'static
 where
-    A: Actor<RunLoop = L> + Into<A::LockStrategy>,
+    A: Actor<RunLoop = L> + Into<A::LockStrategy> + Send,
     L: StandardLoop<A>,
     I: ActorInit<A> + Send + 'static,
     I::Fut: Send,
@@ -154,16 +196,38 @@ where
         // Loop exit, handler panic and task abort all transition to `Dead`.
         let _guard = shared.dead_on_drop();
 
-        // Scope the (possibly `!Send`) actor so it is provably gone - moved into
-        // its lock - before the loop's first await. The driver it yields is the
-        // named `A::EventDriver`, which is `Send` by the bound above (no reclaim,
-        // no `unsafe` - it never was uncheckable, the value is a named type).
+        // The actor is held across the start-hook await (its work borrows it), so
+        // the task future needs `A: Send` - already implied by `A::LockStrategy:
+        // Send` for the real locks, made explicit above. After the hook it moves
+        // into its lock before the loop's first await; the driver it yields is the
+        // named `A::EventDriver`, `Send` by the bound above.
         let lock_strategy;
         let driver;
         {
-            let Some(actor) = init_or_fail(init, &shared).await else {
+            let Some(mut actor) = init_or_fail(init, &shared).await else {
                 return;
             };
+
+            // Drive the start hook before announcing `Running`: the actor is not
+            // yet behind its lock (plain `&mut`), and a waiter on `spawn_ready`
+            // only observes `Running` once startup has completed.
+            {
+                let cx = ActorContext::new(&shared);
+                let start = into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(
+                    actor.on_start(cx),
+                );
+                <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+                    start,
+                )
+                .await;
+            }
+
+            // A failing start hook aborts startup before the loop runs - and the
+            // stop hook does not run, since the actor never reached `Running`.
+            if shared.get_error().is_some() {
+                return;
+            }
+            shared.transition_running();
 
             // Build the driver from the actor (seedable via its `From<&Actor>`
             // impl), before the actor moves into its lock.
@@ -175,10 +239,12 @@ where
     }
 }
 
-/// Run the actor initializer, transitioning to `Running` on success or recording
-/// the error on failure.
+/// Run the actor initializer, returning the constructed actor or recording the
+/// error on failure.
 ///
-/// Returns the constructed actor, or `None` if init failed (the error is already
+/// Does *not* transition the lifecycle to `Running`: the caller drives the start
+/// hook first and announces `Running` only once it succeeds (see
+/// [`standard_run_with`]). Returns `None` if init failed (the error is already
 /// recorded; the caller's dead-on-drop guard then marks the actor dead, so
 /// observers of [`Dead`](crate::actor::state::LifecycleState::Dead) see it).
 pub async fn init_or_fail<A, I>(init: I, shared: &SharedActorState<A>) -> Option<A>
@@ -187,10 +253,7 @@ where
     I: ActorInit<A>,
 {
     match init.init().await {
-        Ok(actor) => {
-            shared.transition_running();
-            Some(actor)
-        }
+        Ok(actor) => Some(actor),
         Err(err) => {
             let _ = shared.set_error(err);
             None

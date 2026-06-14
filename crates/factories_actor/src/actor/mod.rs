@@ -15,6 +15,7 @@ pub mod dispatch;
 pub mod event;
 pub mod handle;
 pub mod identity;
+pub mod lifecycle;
 pub mod rtti;
 pub mod state;
 pub mod task;
@@ -58,6 +59,51 @@ pub unsafe trait Actor: 'static {
 
     /// The event-source driver multiplexed onto this actor's run loop.
     type EventDriver: for<'a> From<&'a Self>;
+
+    /// Run once after the actor is constructed, before it processes any message
+    /// and before the lifecycle leaves
+    /// [`Starting`](state::LifecycleState::Starting).
+    ///
+    /// The actor is not yet behind its lock, so access is plain `&mut self`. The
+    /// hook returns handler-style work - the run loop's
+    /// [`WorkConverter`](ActorRunLoop::WorkConverter) governs its `Send`-ness, so
+    /// no hardcoded `Send` bound is needed - and the default does nothing.
+    ///
+    /// Fail the actor through `cx` to abort startup: the loop then never runs and
+    /// [`on_stop`](Self::on_stop) is skipped. The `#[messages]` `die_on_err` sugar
+    /// wires this up from a `Result`-returning hook body.
+    ///
+    /// Implement this directly on a hand-written actor; the derive routes a
+    /// `#[on_start]` method here for you.
+    fn on_start<'a>(
+        &'a mut self,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let _ = cx;
+        work::NoWork
+    }
+
+    /// Run once after the run loop has quiesced, before the actor is dropped.
+    ///
+    /// The actor arrives **by value** - reclaimed from its lock via
+    /// [`ReclaimableLockStrategy`] once the loop is its sole owner - so the hook
+    /// can decompose it and move fields into owned teardown work. `reason` says
+    /// whether the loop drained cleanly or a failure stopped it. The default drops
+    /// the actor and yields no work.
+    ///
+    /// As with [`on_start`](Self::on_start), implement it directly on a manual
+    /// actor; the derive routes a `#[on_stop]` method here.
+    fn on_stop<'a>(
+        self,
+        reason: lifecycle::StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a
+    where
+        Self: Sized,
+    {
+        let _ = (reason, cx);
+        work::NoWork
+    }
 }
 
 /// Actor initialization protocol: the `Send` boundary of actor construction.
@@ -90,7 +136,19 @@ impl<A: Actor> ActorInit<A> for A {
 }
 
 /// Lock strategy that encapsulates the locking of the actor state.
-pub trait LockStrategy<A: Actor + ?Sized> {}
+pub trait LockStrategy<A: Actor + ?Sized> {
+    /// Reclaim the actor state by value.
+    ///
+    /// Used by the spawn scaffolding to hand the actor to
+    /// [`Actor::on_stop`] once the loop has quiesced and the lock is the sole
+    /// owner. Every real lock owns the actor and can give it back; the bound is
+    /// always available (`A::LockStrategy: LockStrategy<A>` holds for every
+    /// actor), so no separate capability is needed.
+    fn into_inner(self) -> A
+    where
+        Self: Sized,
+        A: Sized;
+}
 
 /// Access mode that defines how a given lock strategy is used to obtain an actor lock.
 ///

@@ -17,8 +17,10 @@ pub enum LifecycleState {
     /// Initialization succeeded and the run loop is processing messages.
     Running = 1,
 
-    // 2 is reserved for `Stopping` (graceful shutdown).
-    //
+    /// The run loop has stopped pulling new work and is running the actor's
+    /// stop hook before the actor is dropped. Reached from [`Running`](Self::Running).
+    Stopping = 2,
+
     /// The actor is dead: init failed, the run loop exited or the task was
     /// aborted. This state is terminal.
     Dead = 3,
@@ -29,6 +31,7 @@ impl LifecycleState {
         match raw {
             0 => Self::Starting,
             1 => Self::Running,
+            2 => Self::Stopping,
             3 => Self::Dead,
             _ => unreachable!("invalid lifecycle state"),
         }
@@ -69,6 +72,19 @@ impl LifecycleCell {
             Ordering::Acquire,
         );
         self.waker.wake();
+    }
+
+    /// Transition from `Running` to `Stopping`.
+    ///
+    /// No-op if the state is not `Running` (the actor may already be dead, or
+    /// never left `Starting` because init/start failed).
+    pub fn transition_stopping(&self) {
+        let _ = self.state.compare_exchange(
+            LifecycleState::Running as u8,
+            LifecycleState::Stopping as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 
     /// Transition to `Dead`. Terminal and idempotent.
@@ -190,6 +206,11 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
     /// Transition from `Starting` to `Running`. No-op outside `Starting`.
     pub fn transition_running(&self) {
         self.inner.lifecycle.transition_running();
+    }
+
+    /// Transition from `Running` to `Stopping`. No-op outside `Running`.
+    pub fn transition_stopping(&self) {
+        self.inner.lifecycle.transition_stopping();
     }
 
     /// Transition to `Dead`. Terminal and idempotent.

@@ -11,8 +11,9 @@ use factories_actor::actor::handle::{AskError, Calling, MessageCall, TypedActorH
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
 use factories_actor::actor::work::IntoRunLoopWork;
+use factories_actor::actor::lifecycle::StopReason;
 use factories_actor::actor::{
-    AccessMode, Actor, ActorInit, ActorRunLoop, LockStrategy, MessageHandler,
+    AccessMode, Actor, ActorContext, ActorInit, ActorRunLoop, LockStrategy, MessageHandler,
     MessageHandlerContext, StaticOnlyBinder,
 };
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
@@ -40,7 +41,11 @@ struct Greeter {
 // Mode-1 stand-in lock strategy: the actor state behind an async mutex.
 struct GreeterLock(tokio::sync::Mutex<Greeter>);
 
-impl LockStrategy<Greeter> for GreeterLock {}
+impl LockStrategy<Greeter> for GreeterLock {
+    fn into_inner(self) -> Greeter {
+        self.0.into_inner()
+    }
+}
 
 impl From<Greeter> for GreeterLock {
     fn from(value: Greeter) -> Self {
@@ -474,7 +479,11 @@ mod custom_loop_scenario {
 
     struct CounterLock(tokio::sync::Mutex<Counter>);
 
-    impl LockStrategy<Counter> for CounterLock {}
+    impl LockStrategy<Counter> for CounterLock {
+        fn into_inner(self) -> Counter {
+            self.0.into_inner()
+        }
+    }
 
     impl From<Counter> for CounterLock {
         fn from(value: Counter) -> Self {
@@ -835,4 +844,125 @@ async fn event_source_produces_self_messages() {
     // No further ticks once the budget drained.
     let again = handle.ask(GetTotal).exchange().await.expect("ask");
     assert_eq!(again, TICK_BUDGET, "no ticks after the budget drained");
+}
+
+// -- Lifecycle hooks: on_start / on_stop ---------------------------------------
+//
+// A hand-written actor implementing the `Actor::on_start` / `Actor::on_stop`
+// hooks directly (the manual path - no derive). Both record into a shared log so
+// the test can assert ordering: `on_start` runs before `Running` (so a
+// `spawn_ready` waiter sees it), handlers run in between, and `on_stop` runs once
+// the loop has drained after the last handle drops.
+
+#[derive(Default, Clone)]
+struct LifecycleLog(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+impl LifecycleLog {
+    fn record(&self, event: &'static str) {
+        self.0.lock().expect("log mutex").push(event);
+    }
+
+    fn snapshot(&self) -> Vec<&'static str> {
+        self.0.lock().expect("log mutex").clone()
+    }
+}
+
+struct Hooked;
+
+declare_actor_rtti!(HOOKED_RTTI, Hooked);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Hooked {
+    const RTTI: &'static ActorRtti = HOOKED_RTTI;
+
+    type Channel = SimpleKanalActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Hooked>;
+    type RunLoop = SequentialRunLoop<Hooked>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = LifecycleLog;
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_start<'a>(
+        &'a mut self,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.extension().clone();
+        async move { log.record("start") }
+    }
+
+    fn on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.extension().clone();
+        let tag = match reason {
+            StopReason::Finished => "stop:finished",
+            StopReason::Failed(_) => "stop:failed",
+        };
+        async move { log.record(tag) }
+    }
+}
+
+#[derive(Debug)]
+struct Ping;
+declare_message!(Ping, ());
+
+impl MessageHandler<Ping> for Hooked {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Hooked, Ping> = declare_static_dispatcher!(Hooked, Ping);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, Ping, Self, lock::Exclusive>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            actor_cx.extension().record("ping");
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_hooks_run_in_order() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Hooked)
+        .await
+        .expect("hooked init is infallible");
+
+    // `on_start` ran before `Running` was observable, so `spawn_ready` already
+    // sees it.
+    let log = handle.state().extension().clone();
+    assert_eq!(log.snapshot(), ["start"], "on_start runs before Running");
+
+    handle.ask(Ping).exchange().await.expect("ask");
+    assert_eq!(log.snapshot(), ["start", "ping"]);
+
+    // Drop the last handle: the mailbox closes, the loop drains and runs the stop
+    // hook before the actor dies.
+    let state = handle.state().clone();
+    drop(handle);
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while state.lifecycle() != LifecycleState::Dead {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "actor must die after the last handle is dropped"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(
+        log.snapshot(),
+        ["start", "ping", "stop:finished"],
+        "on_stop runs on a clean drain with the Finished reason"
+    );
 }

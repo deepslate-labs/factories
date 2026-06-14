@@ -33,6 +33,7 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
     /// drop the set on failure.
     async fn run<D, M>(self, mut mailbox: M, mut driver: D)
     where
+        A: Sized + Send,
         D: EventDriver<A, M> + Send,
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
@@ -41,10 +42,10 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
         let mut work_set = FuturesUnordered::new();
 
         loop {
-            // A handler failed the actor: drop the in-flight work set and exit
-            // without draining - the actor state is compromised.
+            // A handler failed the actor: stop pulling and skip the drain - the
+            // actor state is compromised. The stop hook still runs.
             if self.dispatch_context.shared().get_error().is_some() {
-                return;
+                break;
             }
 
             let pull = self
@@ -71,13 +72,21 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
             work_set.push(handler);
         }
 
-        // Drive pending work to completion before shutting down.
-        while work_set.next().await.is_some() {
-            // Failures cut the drain short.
-            if self.dispatch_context.shared().get_error().is_some() {
-                return;
+        // Drive pending work to completion before shutting down, unless a failure
+        // already compromised the state (then the in-flight work is dropped).
+        if self.dispatch_context.shared().get_error().is_none() {
+            while work_set.next().await.is_some() {
+                if self.dispatch_context.shared().get_error().is_some() {
+                    break;
+                }
             }
         }
+
+        // Drop the work set before reclaiming the actor: its futures borrow the
+        // dispatch context (and hold guards), so they must be gone before
+        // `run_stop_hook` takes the lock by value.
+        drop(work_set);
+        self.dispatch_context.run_stop_hook().await;
     }
 }
 
@@ -99,7 +108,7 @@ impl<A: Actor<RunLoop = Self> + ?Sized> ActorRunLoop<A> for ConcurrentRunLoop<A>
 
 impl<A> SpawnableRunLoop<A> for ConcurrentRunLoop<A>
 where
-    A: Actor<RunLoop = Self> + Into<A::LockStrategy>,
+    A: Actor<RunLoop = Self> + Into<A::LockStrategy> + Send,
     A::LockStrategy: Send + Sync,
     A::Error: Send + Sync + 'static,
 {

@@ -30,15 +30,16 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
     /// dispatch - serialized, so the actor state needs no real lock.
     async fn run<D, M>(self, mut mailbox: M, mut driver: D)
     where
+        A: Sized + Send,
         D: EventDriver<A, M> + Send,
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync,
     {
         loop {
-            // A handler failed the actor: stop pulling.
+            // A handler failed the actor: stop pulling (the stop hook still runs).
             if self.dispatch_context.shared().get_error().is_some() {
-                return;
+                break;
             }
 
             let Some(handler) = self
@@ -46,11 +47,13 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
                 .next_dispatch(&mut driver, &mut mailbox)
                 .await
             else {
-                return;
+                break;
             };
 
             handler.await;
         }
+
+        self.dispatch_context.run_stop_hook().await;
     }
 }
 
@@ -78,7 +81,7 @@ unsafe impl<A: Actor<RunLoop = Self> + ?Sized> SerializedDispatch<A> for Sequent
 
 impl<A> SpawnableRunLoop<A> for SequentialRunLoop<A>
 where
-    A: Actor<RunLoop = Self> + Into<A::LockStrategy>,
+    A: Actor<RunLoop = Self> + Into<A::LockStrategy> + Send,
     A::LockStrategy: Send + Sync,
     A::Error: Send + Sync + 'static,
 {

@@ -66,6 +66,9 @@ impl<'a> ErasedWork<'a> {
 pub trait WorkConverter {
     /// This loop's unit of work, valid for `'a`.
     type Erased<'a>;
+
+    /// Work that does nothing.
+    fn empty<'a>() -> Self::Erased<'a>;
 }
 
 /// A [`WorkConverter`] whose work is driven by polling a `Send` future - the
@@ -114,6 +117,10 @@ pub struct SendFutureConverter;
 
 impl WorkConverter for SendFutureConverter {
     type Erased<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    fn empty<'a>() -> Self::Erased<'a> {
+        Box::pin(async {})
+    }
 }
 
 impl FutureWorkConverter for SendFutureConverter {
@@ -128,5 +135,24 @@ impl<F: Future<Output = ()> + Send> IntoRunLoopWork<SendFutureConverter> for F {
         F: 'a,
     {
         Box::pin(self)
+    }
+}
+
+/// Work that does nothing, for *any* converter.
+///
+/// The no-op an unimplemented lifecycle hook
+/// ([`Actor::on_start`](crate::actor::Actor::on_start) /
+/// [`on_stop`](crate::actor::Actor::on_stop)) returns: it erases to
+/// [`WorkConverter::empty`] for whatever converter the loop uses, so this single
+/// value satisfies [`IntoRunLoopWork`] for every loop without per-converter impls.
+#[derive(Debug, Default, Copy, Clone)]
+pub struct NoWork;
+
+impl<C: WorkConverter> IntoRunLoopWork<C> for NoWork {
+    fn into_erased<'a>(self) -> C::Erased<'a>
+    where
+        Self: 'a,
+    {
+        C::empty()
     }
 }

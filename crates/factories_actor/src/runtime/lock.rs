@@ -177,7 +177,14 @@ unsafe impl<A: Send + ?Sized> Send for UnguardedLock<A> {}
 //         for `A: Send`.
 unsafe impl<A: Send + ?Sized> Sync for UnguardedLock<A> {}
 
-impl<A: Actor + ?Sized> LockStrategy<A> for UnguardedLock<A> {}
+impl<A: Actor + ?Sized> LockStrategy<A> for UnguardedLock<A> {
+    fn into_inner(self) -> A
+    where
+        A: Sized,
+    {
+        self.state.into_inner()
+    }
+}
 
 impl<A: Actor + ?Sized> ExclusiveLockStrategy<A> for UnguardedLock<A>
 where

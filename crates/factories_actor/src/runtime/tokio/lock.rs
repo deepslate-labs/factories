@@ -31,7 +31,14 @@ impl<A> From<A> for TokioMutexLock<A> {
     }
 }
 
-impl<A: Actor + ?Sized> LockStrategy<A> for TokioMutexLock<A> {}
+impl<A: Actor + ?Sized> LockStrategy<A> for TokioMutexLock<A> {
+    fn into_inner(self) -> A
+    where
+        A: Sized,
+    {
+        self.mutex.into_inner()
+    }
+}
 
 impl<A: Actor + ?Sized> ExclusiveLockStrategy<A> for TokioMutexLock<A> {
     type ExclusiveGuard<'a> = tokio::sync::MutexGuard<'a, A>;
@@ -72,7 +79,14 @@ impl<A> From<A> for TokioRwLock<A> {
     }
 }
 
-impl<A: Actor + ?Sized> LockStrategy<A> for TokioRwLock<A> {}
+impl<A: Actor + ?Sized> LockStrategy<A> for TokioRwLock<A> {
+    fn into_inner(self) -> A
+    where
+        A: Sized,
+    {
+        self.lock.into_inner()
+    }
+}
 
 impl<A: Actor + ?Sized> ExclusiveLockStrategy<A> for TokioRwLock<A> {
     type ExclusiveGuard<'a> = tokio::sync::RwLockWriteGuard<'a, A>;

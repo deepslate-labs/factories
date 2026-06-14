@@ -516,7 +516,11 @@ mod tests {
 
     struct TableActorLock;
 
-    impl LockStrategy<TableActor> for TableActorLock {}
+    impl LockStrategy<TableActor> for TableActorLock {
+        fn into_inner(self) -> TableActor {
+            TableActor
+        }
+    }
 
     struct TableActorChannel;
 

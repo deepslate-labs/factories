@@ -30,7 +30,11 @@ struct StaleActor;
 
 struct StaleLock(StaleActor);
 
-impl LockStrategy<StaleActor> for StaleLock {}
+impl LockStrategy<StaleActor> for StaleLock {
+    fn into_inner(self) -> StaleActor {
+        self.0
+    }
+}
 
 struct StaleChannel;
 
