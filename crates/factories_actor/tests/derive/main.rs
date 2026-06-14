@@ -27,6 +27,7 @@ mod actor;
 mod event_source;
 mod failure;
 mod handlers;
+mod lifecycle;
 mod markers;
 mod message;
 mod template;

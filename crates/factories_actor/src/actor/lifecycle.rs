@@ -11,7 +11,8 @@
 //! `Send`-ness exactly as it does message-handler work; the default is a no-op
 //! ([`NoWork`](crate::actor::work::NoWork)).
 
-use crate::actor::Actor;
+use crate::actor::work::WorkConverter;
+use crate::actor::{Actor, ActorContext, ActorRunLoop};
 use core::fmt::{Debug, Formatter};
 
 /// Why an actor's run loop is stopping, handed to
@@ -47,4 +48,45 @@ where
             Self::Failed(error) => f.debug_tuple("Failed").field(error).finish(),
         }
     }
+}
+
+/// The erased work a lifecycle hook produces: the actor's run loop's converter's
+/// [`Erased`](WorkConverter::Erased).
+#[doc(hidden)]
+pub type ErasedHookWork<'a, A> =
+    <<<A as Actor>::RunLoop as ActorRunLoop<A>>::WorkConverter as WorkConverter>::Erased<'a>;
+
+/// A start hook, erased and reduced to a plain function pointer so the derive can
+/// carry it out of a `match_specialize!` arm (where the `OnStartHook` bound is
+/// discharged) and apply it where `cx` is concrete.
+#[doc(hidden)]
+pub type ErasedStartHook<A> =
+    for<'a> fn(&'a mut A, ActorContext<'a, A>) -> ErasedHookWork<'a, A>;
+
+/// A stop hook, erased to a function pointer (see [`ErasedStartHook`]).
+#[doc(hidden)]
+pub type ErasedStopHook<A> =
+    for<'a> fn(A, StopReason<'a, A>, ActorContext<'a, A>) -> ErasedHookWork<'a, A>;
+
+/// Implemented by `#[messages]` for an actor with an `#[on_start]` method; routed
+/// to by the derive's [`Actor::on_start`](crate::actor::Actor::on_start).
+#[doc(hidden)]
+pub trait OnStartHook: Actor {
+    fn __erased_on_start<'a>(
+        &'a mut self,
+        cx: ActorContext<'a, Self>,
+    ) -> ErasedHookWork<'a, Self>;
+}
+
+/// Implemented by `#[messages]` for an actor with an `#[on_stop]` method; routed
+/// to by the derive's [`Actor::on_stop`](crate::actor::Actor::on_stop).
+#[doc(hidden)]
+pub trait OnStopHook: Actor {
+    fn __erased_on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> ErasedHookWork<'a, Self>
+    where
+        Self: Sized;
 }

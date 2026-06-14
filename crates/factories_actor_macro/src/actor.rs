@@ -138,6 +138,8 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     // `const _` block) so it is nameable, and inherits the actor's visibility.
     // It is the actor's `TypedHandle`, and `#[messages]` adds the per-message
     // methods to it as inherent impls.
+    let lifecycle_hooks = generated_lifecycle_hooks(ident);
+
     let handle_ident = format_ident!("{}Handle", ident);
     let handle_ty = quote!(::factories_actor::actor::handle::TypedActorHandle<#ident>);
     let handle_doc = format!(
@@ -213,8 +215,78 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 type TypedHandle = #handle_ident;
                 type SharedStateExtension = #shared;
                 type EventDriver = #event_driver;
+
+                #lifecycle_hooks
             }
         };
+    }
+}
+
+/// The `Actor::on_start` / `on_stop` overrides the derive emits.
+///
+/// The hooks are written in a `#[messages]` block (`#[on_start]` / `#[on_stop]`),
+/// which is a separate expansion, so it cannot place them in this `impl Actor`.
+/// Instead `#[messages]` implements the hidden `OnStartHook` / `OnStopHook`, and
+/// these overrides detect that impl with `match_specialize!` and forward to it -
+/// reducing the hook to a plain function pointer inside the matched arm (where the
+/// bound is known) and applying it where the context is concrete. With no such
+/// impl the fallback arm yields no work, exactly like the default.
+fn generated_lifecycle_hooks(ident: &Ident) -> TokenStream {
+    let actor = quote!(::factories_actor::actor::Actor);
+    let run_loop = quote!(::factories_actor::actor::ActorRunLoop);
+    let lifecycle = quote!(::factories_actor::actor::lifecycle);
+    let work = quote!(::factories_actor::actor::work);
+    let context = quote!(::factories_actor::actor::ActorContext);
+    let specialize = quote!(::factories_actor::factories_rtti::_imp::match_specialize);
+    let converter = quote!(<<Self as #actor>::RunLoop as #run_loop<Self>>::WorkConverter);
+    let into_work_ty = quote!(impl #work::IntoRunLoopWork<#converter>);
+    let empty = quote!(<#converter as #work::WorkConverter>::empty());
+
+    quote! {
+        fn on_start<'__hook>(
+            &'__hook mut self,
+            __cx: #context<'__hook, Self>,
+        ) -> #into_work_ty + '__hook {
+            let __probe: &#ident = self;
+            let __hook: ::core::option::Option<#lifecycle::ErasedStartHook<#ident>> =
+                #specialize!(__probe: &#ident {
+                    __T @ #lifecycle::OnStartHook + ::core::marker::Sized
+                        : ::core::option::Option<#lifecycle::ErasedStartHook<__T>>
+                        => ::core::option::Option::Some(
+                            <__T as #lifecycle::OnStartHook>::__erased_on_start,
+                        ),
+                    __T @ #actor + ::core::marker::Sized
+                        : ::core::option::Option<#lifecycle::ErasedStartHook<__T>>
+                        => ::core::option::Option::None,
+                });
+            match __hook {
+                ::core::option::Option::Some(__hook) => __hook(self, __cx),
+                ::core::option::Option::None => #empty,
+            }
+        }
+
+        fn on_stop<'__hook>(
+            self,
+            __reason: #lifecycle::StopReason<'__hook, Self>,
+            __cx: #context<'__hook, Self>,
+        ) -> #into_work_ty + '__hook {
+            let __probe: &#ident = &self;
+            let __hook: ::core::option::Option<#lifecycle::ErasedStopHook<#ident>> =
+                #specialize!(__probe: &#ident {
+                    __T @ #lifecycle::OnStopHook + ::core::marker::Sized
+                        : ::core::option::Option<#lifecycle::ErasedStopHook<__T>>
+                        => ::core::option::Option::Some(
+                            <__T as #lifecycle::OnStopHook>::__erased_on_stop,
+                        ),
+                    __T @ #actor + ::core::marker::Sized
+                        : ::core::option::Option<#lifecycle::ErasedStopHook<__T>>
+                        => ::core::option::Option::None,
+                });
+            match __hook {
+                ::core::option::Option::Some(__hook) => __hook(self, __reason, __cx),
+                ::core::option::Option::None => #empty,
+            }
+        }
     }
 }
 

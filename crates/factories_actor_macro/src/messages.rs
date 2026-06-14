@@ -101,10 +101,15 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     // additive there.
     let mut handlers = Vec::new();
     let mut event_sources = Vec::new();
+    let mut on_starts = Vec::new();
+    let mut on_stops = Vec::new();
     input.items.retain_mut(|item| {
         match item {
             ImplItem::Fn(function) => {
                 let mut is_event_source = false;
+                let mut is_on_start = false;
+                let mut is_on_stop = false;
+                let mut hook_die_on_err = false;
                 function.attrs.retain(|attr| {
                     if attr.path().is_ident("event_source") {
                         if !matches!(attr.meta, Meta::Path(_)) {
@@ -114,6 +119,14 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
                             );
                         }
                         is_event_source = true;
+                        false
+                    } else if attr.path().is_ident("on_start") {
+                        is_on_start = true;
+                        hook_die_on_err = parse_hook_die_on_err(attr, "on_start");
+                        false
+                    } else if attr.path().is_ident("on_stop") {
+                        is_on_stop = true;
+                        hook_die_on_err = parse_hook_die_on_err(attr, "on_stop");
                         false
                     } else {
                         true
@@ -129,6 +142,30 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
                         true
                     }
                 });
+
+                // Lifecycle hooks have no `self`-less or message machinery; like
+                // `#[event_source]` they are *consumed* (re-emitted, renamed, plus
+                // the routing trait impl) rather than kept as inherent methods.
+                if is_on_start || is_on_stop {
+                    if is_on_start && is_on_stop {
+                        proc_macro_error::emit_error!(
+                            function.sig.ident.span(),
+                            "#[on_start] and #[on_stop] cannot be combined on one method"
+                        );
+                    }
+                    if is_event_source || !markers.is_empty() {
+                        proc_macro_error::emit_error!(
+                            function.sig.ident.span(),
+                            "#[on_start]/#[on_stop] cannot be combined with #[event_source]/#[handler]"
+                        );
+                    }
+                    if is_on_start {
+                        on_starts.push((function.clone(), hook_die_on_err));
+                    } else {
+                        on_stops.push((function.clone(), hook_die_on_err));
+                    }
+                    return false;
+                }
 
                 if is_event_source {
                     if !markers.is_empty() {
@@ -226,6 +263,27 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
         }
     }
 
+    // At most one of each lifecycle hook (a second `OnStartHook`/`OnStopHook`
+    // impl would conflict; this points at the duplicate).
+    if let Some((extra, _)) = on_starts.get(1) {
+        proc_macro_error::emit_error!(
+            extra.sig.ident.span(),
+            "an actor can declare at most one #[on_start]"
+        );
+    }
+    for (function, die_on_err) in &on_starts {
+        generated.extend(expand_lifecycle_hook(self_ty, function, Hook::Start, *die_on_err));
+    }
+    if let Some((extra, _)) = on_stops.get(1) {
+        proc_macro_error::emit_error!(
+            extra.sig.ident.span(),
+            "an actor can declare at most one #[on_stop]"
+        );
+    }
+    for (function, die_on_err) in &on_stops {
+        generated.extend(expand_lifecycle_hook(self_ty, function, Hook::Stop, *die_on_err));
+    }
+
     // The typed-handle methods forward to the generated messages. They live on
     // the derive's handle newtype and are gated behind `tokio-answer` (via the
     // library macro) because `MessageCall` is - feature-blind, like everything
@@ -265,6 +323,161 @@ fn reject_misplaced_markers(attrs: &[Attribute]) {
             );
         }
     }
+}
+
+/// Which lifecycle hook a `#[on_start]` / `#[on_stop]` method becomes.
+#[derive(Copy, Clone)]
+enum Hook {
+    Start,
+    Stop,
+}
+
+/// Expand an `#[on_start]` / `#[on_stop]` method into the hidden routing trait
+/// impl the derive's `Actor::on_start` / `on_stop` forward to.
+///
+/// The method is re-emitted (renamed, so it cannot clash with the `Actor::on_start`
+/// trait method) as an inherent method, and the routing impl forwards to it
+/// through [`into_work`](::factories_actor::actor::work::into_work) - so the hook
+/// body returns ordinary handler-style work (typically an `async fn` body) while
+/// the loop receives the converter's erased work.
+///
+/// Required shapes (mirroring the `Actor` hooks):
+/// - `#[on_start]`: `fn(&mut self, cx: ActorContext<Self>)`
+/// - `#[on_stop]`: `fn(self, reason: StopReason<Self>, cx: ActorContext<Self>)`
+///
+/// `die_on_err` (`#[on_start(die_on_err)]`) lets the body return a `Result`-like:
+/// an `Err` is routed to [`ActorContext::fail`] via `cx`, so the erased work stays
+/// `()`-output. (For `on_start` a failure aborts startup; for `on_stop` it records
+/// the error during shutdown.)
+fn expand_lifecycle_hook(
+    self_ty: &Type,
+    function: &ImplItemFn,
+    hook: Hook,
+    die_on_err: bool,
+) -> TokenStream {
+    let signature = &function.sig;
+
+    let Some(receiver) = signature.receiver() else {
+        proc_macro_error::emit_error!(
+            signature.ident.span(),
+            "lifecycle hooks must take `self`"
+        );
+        return TokenStream::new();
+    };
+
+    match hook {
+        Hook::Start if receiver.reference.is_none() || receiver.mutability.is_none() => {
+            proc_macro_error::emit_error!(receiver.span(), "#[on_start] must take `&mut self`");
+            return TokenStream::new();
+        }
+        Hook::Stop if receiver.reference.is_some() => {
+            proc_macro_error::emit_error!(
+                receiver.span(),
+                "#[on_stop] must take `self` by value (the actor is reclaimed from its lock)"
+            );
+            return TokenStream::new();
+        }
+        _ => {}
+    }
+
+    // Re-emit the method under a mangled name so it never clashes with the
+    // `Actor::on_start` / `on_stop` trait methods it routes to.
+    let mangled = format_ident!(
+        "__factories_actor_{}",
+        match hook {
+            Hook::Start => "on_start_hook",
+            Hook::Stop => "on_stop_hook",
+        }
+    );
+    let mut renamed = function.clone();
+    renamed.sig.ident = mangled.clone();
+
+    let lifecycle = quote!(::factories_actor::actor::lifecycle);
+    let work = quote!(::factories_actor::actor::work);
+    let context = quote!(::factories_actor::actor::ActorContext);
+    let result = quote!(::factories_actor::runtime::result::ResultLike);
+    let converter = quote!(
+        <<Self as ::factories_actor::actor::Actor>::RunLoop
+            as ::factories_actor::actor::ActorRunLoop<Self>>::WorkConverter
+    );
+
+    // The call into the renamed inherent method, forwarding the hook's params.
+    let call = match hook {
+        Hook::Start => quote!(Self::#mangled(self, cx)),
+        Hook::Stop => quote!(Self::#mangled(self, reason, cx)),
+    };
+
+    // The routing trait method body. `die_on_err` wraps the call so an `Err` is
+    // sent to `cx.fail` and the erased work stays `()`-output; otherwise the
+    // hook's work is erased directly.
+    let forward = if die_on_err {
+        quote! {
+            #work::into_work::<#converter, _>(async move {
+                if let ::core::result::Result::Err(__error) = #result::into_result(#call.await) {
+                    cx.fail(::core::convert::Into::into(__error));
+                }
+            })
+        }
+    } else {
+        quote!(#work::into_work::<#converter, _>(#call))
+    };
+
+    match hook {
+        Hook::Start => quote! {
+            impl #self_ty {
+                #renamed
+            }
+
+            impl #lifecycle::OnStartHook for #self_ty {
+                fn __erased_on_start<'__hook>(
+                    &'__hook mut self,
+                    cx: #context<'__hook, Self>,
+                ) -> #lifecycle::ErasedHookWork<'__hook, Self> {
+                    #forward
+                }
+            }
+        },
+        Hook::Stop => quote! {
+            impl #self_ty {
+                #renamed
+            }
+
+            impl #lifecycle::OnStopHook for #self_ty {
+                fn __erased_on_stop<'__hook>(
+                    self,
+                    reason: #lifecycle::StopReason<'__hook, Self>,
+                    cx: #context<'__hook, Self>,
+                ) -> #lifecycle::ErasedHookWork<'__hook, Self> {
+                    #forward
+                }
+            }
+        },
+    }
+}
+
+/// Parse an `#[on_start(...)]` / `#[on_stop(...)]` attribute, returning whether
+/// `die_on_err` was requested. The bare form takes no arguments; the only key is
+/// `die_on_err`.
+fn parse_hook_die_on_err(attr: &Attribute, hook: &str) -> bool {
+    if matches!(attr.meta, Meta::Path(_)) {
+        return false;
+    }
+
+    let mut die_on_err = false;
+    let result = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("die_on_err") {
+            die_on_err = true;
+            Ok(())
+        } else {
+            Err(meta.error(format!("unknown #[{hook}] key, expected `die_on_err`")))
+        }
+    });
+
+    if let Err(error) = result {
+        util::emit_syn_error(error);
+    }
+
+    die_on_err
 }
 
 /// Expand an `#[event_source]` method into an `ActorEventSource` impl.
