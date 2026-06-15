@@ -16,6 +16,7 @@ pub mod event;
 pub mod handle;
 pub mod identity;
 pub mod lifecycle;
+pub mod protocol;
 pub mod rtti;
 pub mod state;
 pub mod supervision;

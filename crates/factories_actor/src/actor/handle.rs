@@ -307,7 +307,7 @@ pub enum AskError {
 pub struct MessageCall<T>(T);
 
 #[cfg(feature = "tokio-answer")]
-mod sealed {
+pub(crate) mod sealed {
     pub trait Sealed {}
 }
 

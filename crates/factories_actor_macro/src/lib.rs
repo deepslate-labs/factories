@@ -6,6 +6,7 @@
 mod actor;
 mod message;
 mod messages;
+mod protocol;
 mod util;
 
 /// Derive [`Actor`] for a type, including its RTTI declaration.
@@ -179,6 +180,50 @@ pub fn messages(
     messages::messages(
         attrs.into(),
         syn::parse_macro_input!(input as syn::ItemImpl),
+    )
+    .into()
+}
+
+/// Declare an actor protocol from a trait whose methods name messages.
+///
+/// A protocol is the middle ground between a typed handle (knows the actor type,
+/// hence every message) and an untyped handle (knows nothing - every send may
+/// fail to bind). It defines a trait plus a concrete erased `…Handle` carrying
+/// the guarantee that its declared messages bind.
+///
+/// Each method declares one message via its single parameter; the method name is
+/// yours, the return type is filled in (the message's own `Message::Answer`):
+///
+/// ```ignore
+/// #[factories_actor::protocol]
+/// trait Greeter {
+///     fn hello(&self, msg: Hello);
+///     fn goodbye(&self, msg: Goodbye);
+/// }
+/// ```
+///
+/// This generates:
+/// - `trait Greeter` (each method returning `impl Calling<…>`), blanket-impl'd
+///   over any `TypedActorHandle<A>` whose actor handles every message - the
+///   zero-cost generic-bound surface (`fn f(g: impl Greeter)`).
+/// - `struct GreeterHandle` - the erased handle, an `AnyActorHandle` plus a
+///   cached dispatcher table. Built infallibly from a typed handle (`From`, table
+///   from each `MessageHandler::DISPATCHER`) or fallibly from an `AnyActorHandle`
+///   (`TryFrom`, table bound via the registry). `Vec<GreeterHandle>` is a
+///   heterogeneous collection of different actors speaking the protocol.
+///
+/// A shared protocol is `Send + Sync` (its handle wraps an `AnyActorHandle`);
+/// `#[protocol(local)]` makes a thread-local protocol whose handle wraps an
+/// `AnyLocalActorHandle`. Requires the `tokio-answer` feature (the call machinery).
+#[proc_macro_error::proc_macro_error]
+#[proc_macro_attribute]
+pub fn protocol(
+    attrs: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    protocol::protocol(
+        attrs.into(),
+        syn::parse_macro_input!(input as syn::ItemTrait),
     )
     .into()
 }

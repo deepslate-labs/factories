@@ -1,5 +1,11 @@
 use crate::message::Message;
 use core::fmt::Formatter;
+#[cfg(feature = "tokio-answer")]
+use core::future::Future;
+#[cfg(feature = "tokio-answer")]
+use core::pin::Pin;
+#[cfg(feature = "tokio-answer")]
+use core::task::{Context, Poll};
 
 /// The reply sender used to reply to messages.
 ///
@@ -64,6 +70,21 @@ impl<T: Message> AnswerReceiver<T> {
             AnswerReceiver::Tokio(tokio) => tokio.blocking_recv().ok(),
             #[cfg(not(any(feature = "tokio-answer")))]
             AnswerReceiver::Never(_) => unreachable!(),
+        }
+    }
+}
+
+/// Polling the receiver yields the answer, or `None` if the sender was dropped
+/// without replying. This is the pollable form of [`AnswerReceiver::recv`], used
+/// by the protocol ask state machine. The inner oneshot receiver is `Unpin`, so
+/// the wrapper is too.
+#[cfg(feature = "tokio-answer")]
+impl<T: Message> Future for AnswerReceiver<T> {
+    type Output = Option<T::Answer>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut() {
+            AnswerReceiver::Tokio(tokio) => Pin::new(tokio).poll(cx).map(Result::ok),
         }
     }
 }

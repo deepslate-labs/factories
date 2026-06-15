@@ -17,6 +17,12 @@ pub mod spawn;
 #[cfg(feature = "derive")]
 pub use factories_actor_macro::messages;
 
+/// Declare an actor protocol: a trait whose methods name messages, plus a
+/// concrete erased handle guaranteeing those messages bind. See the macro
+/// documentation for details.
+#[cfg(feature = "derive")]
+pub use factories_actor_macro::protocol;
+
 // Re-exported for use by the declaration macros; not public API.
 #[doc(hidden)]
 pub use factories_rtti;
