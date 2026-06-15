@@ -457,7 +457,7 @@ mod tests {
     };
     use crate::actor::event::DefaultMailboxDriver;
     use crate::actor::handle::TypedActorHandle;
-    use crate::actor::work::{ErasedWork, SendFutureConverter, into_work};
+    use crate::actor::work::{SendFutureConverter, WorkConverter, into_work};
     use crate::actor::{ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy, StaticOnlyBinder};
     use crate::message::envelope::MessageEnvelope;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -480,14 +480,26 @@ mod tests {
     static DISPATCH_A_CALLS: AtomicUsize = AtomicUsize::new(0);
     static DISPATCH_B_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    unsafe fn dispatch_a(_: DispatchContextPtr, _: DispatchedActorMessageContext) -> ErasedWork {
+    unsafe fn dispatch_a<'ctx>(
+        _: DispatchContextPtr<'ctx>,
+        _: DispatchedActorMessageContext,
+        out: *mut (),
+    ) {
         DISPATCH_A_CALLS.fetch_add(1, Ordering::Relaxed);
-        ErasedWork::pack(into_work::<SendFutureConverter, _>(async {}))
+        let erased: <SendFutureConverter as WorkConverter>::Erased<'ctx> =
+            into_work::<SendFutureConverter, _>(async {});
+        unsafe { out.cast::<<SendFutureConverter as WorkConverter>::Erased<'ctx>>().write(erased) };
     }
 
-    unsafe fn dispatch_b(_: DispatchContextPtr, _: DispatchedActorMessageContext) -> ErasedWork {
+    unsafe fn dispatch_b<'ctx>(
+        _: DispatchContextPtr<'ctx>,
+        _: DispatchedActorMessageContext,
+        out: *mut (),
+    ) {
         DISPATCH_B_CALLS.fetch_add(1, Ordering::Relaxed);
-        ErasedWork::pack(into_work::<SendFutureConverter, _>(async {}))
+        let erased: <SendFutureConverter as WorkConverter>::Erased<'ctx> =
+            into_work::<SendFutureConverter, _>(async {});
+        unsafe { out.cast::<<SendFutureConverter as WorkConverter>::Erased<'ctx>>().write(erased) };
     }
 
     /// Invoke a bound dispatcher the way a run loop would.
@@ -496,12 +508,22 @@ mod tests {
         let message_context =
             DispatchedActorMessageContext::of(MessageEnvelope::new(message, None));
 
+        let mut slot =
+            core::mem::MaybeUninit::<<SendFutureConverter as WorkConverter>::Erased<'_>>::uninit();
+
         // SAFETY: The context is the table actor's real dispatch context type,
         //         the envelope carries the message type the dispatcher was
-        //         bound for in the test table, and we stay on this thread.
-        let acquire =
-            unsafe { dispatcher.invoke(DispatchContextPtr::new(&context), message_context) };
+        //         bound for in the test table, `slot` is sized as the converter's
+        //         `Erased`, and we stay on this thread.
+        unsafe {
+            dispatcher.invoke(
+                DispatchContextPtr::new(&context),
+                message_context,
+                slot.as_mut_ptr().cast::<()>(),
+            );
+        }
 
+        let acquire = unsafe { slot.assume_init() };
         drop(acquire);
     }
 

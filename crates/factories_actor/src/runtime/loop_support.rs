@@ -20,11 +20,10 @@ use core::fmt::{Debug, Formatter};
 use core::future::Future;
 use core::pin::Pin;
 
-/// The unit of work the standard run loops drive: a `Send` future. The opaque
-/// [`ErasedWork`](crate::actor::work::ErasedWork) cell is unpacked to the
-/// converter's `Erased` and then viewed as this concrete future by
-/// [`next_dispatch`](StandardDispatchContext::next_dispatch), so the loops never
-/// touch the cell or the GAT directly.
+/// The unit of work the standard run loops drive: a `Send` future.
+/// [`next_dispatch`](StandardDispatchContext::next_dispatch) gets the converter's
+/// `Erased` straight from the dispatcher (written into a caller-owned slot) and
+/// views it as this concrete future, so the loops never touch the GAT directly.
 pub type StandardWork<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// The dispatch context shared by the standard run loops: the actor's lock

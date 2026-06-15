@@ -281,8 +281,7 @@ pub trait MessageHandler<M: Message>: Actor {
     /// The statically bound dispatcher for this actor/message pair.
     ///
     /// Declared via [`declare_static_dispatcher!`](crate::declare_static_dispatcher),
-    /// which erases the dispatch into the run loop's
-    /// [`ErasedWork`](crate::actor::work::ErasedWork) via its
+    /// which erases the dispatch through the run loop's
     /// [`WorkConverter`](ActorRunLoop::WorkConverter) where the concrete handler
     /// types are known (so the converter's `Send` requirement is checked there).
     /// Typed handles use this constant to skip the runtime binder at statically

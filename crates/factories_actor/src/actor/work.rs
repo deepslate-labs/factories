@@ -6,55 +6,21 @@
 //! [`Erased`](WorkConverter::Erased) representation. A future is just *one* thing
 //! a converter accepts.
 //!
-//! The currency that crosses the (uniform) dispatcher fn-pointer is
-//! [`ErasedWork`]: a fully opaque cell that mandates *no* drive protocol. It is a
-//! pure transient - built and unpacked back to the converter's typed `Erased`
-//! within a single synchronous
-//! [`dispatch_onto_loop`](crate::actor::dispatch::DispatchedActorMessage::dispatch_onto_loop)
-//! call, never held across an `.await` and never sent - so it needs no `Send` of
-//! its own (it is plainly `!Send`). The typed `Erased` it yields carries the real
-//! bounds, which is why `dispatch_onto_loop` can be a public (`unsafe`) building
+//! The dispatcher fn-pointer is uniform across every actor/message pair, so it
+//! cannot name the converter's [`Erased`](WorkConverter::Erased) in its return
+//! type. Rather than heap-erase the value to launder it across that boundary, the
+//! dispatch site
+//! ([`dispatch_onto_loop`](crate::actor::dispatch::DispatchedActorMessage::dispatch_onto_loop))
+//! provides a correctly-typed, uninitialized stack slot and the dispatcher writes
+//! its `Erased` into it through a thin `*mut ()`. No heap, no boxing: the value
+//! is moved once into storage the caller already owns, and the caller - which
+//! knows the concrete `Erased` from its actor type parameter - reads it straight
+//! back. This is why `dispatch_onto_loop` can be a public (`unsafe`) building
 //! block for hand-rolled run loops.
 
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
-
-trait Payload<'a> {}
-impl<'a, T: 'a> Payload<'a> for T {}
-
-/// The uniform, fully type-erased unit of work crossing the dispatcher
-/// fn-pointer. Carries no protocol: the dispatch site casts it back to its
-/// converter's [`Erased`](WorkConverter::Erased) and the loop drives *that*
-/// however it likes.
-pub struct ErasedWork<'a>(Box<dyn Payload<'a> + 'a>);
-
-impl<'a> ErasedWork<'a> {
-    /// Pack any payload. The concrete type is forgotten; only the box's drop
-    /// glue is retained (in its vtable), so dropping the cell un-unpacked still
-    /// runs the payload's destructor.
-    ///
-    /// Safe: the cell is `!Send`, so a packed `!Send` payload can never be moved
-    /// to another thread through it.
-    pub fn pack<T: 'a>(value: T) -> Self {
-        ErasedWork(Box::new(value))
-    }
-
-    /// Recover the payload by value.
-    ///
-    /// # Safety
-    /// `T` must be exactly the type that was packed. In the crate this is upheld
-    /// by [`dispatch_onto_loop`](crate::actor::dispatch::DispatchedActorMessage::dispatch_onto_loop):
-    /// the dispatcher was bound for actor `A`, so it packed `A`'s converter's
-    /// [`Erased`](WorkConverter::Erased) - the same fact that already makes that
-    /// method `unsafe`.
-    pub unsafe fn unpack<T: 'a>(self) -> T {
-        // fat `*mut dyn Payload` -> thin `*mut T` keeps the data address; the
-        // allocation *is* a `T`, so reclaiming it as `Box<T>` is sound.
-        let raw = Box::into_raw(self.0).cast::<T>();
-        *unsafe { Box::from_raw(raw) }
-    }
-}
 
 /// Selects how a handler's return becomes a run loop's work, and what that work
 /// *is*. A run loop names one of these via

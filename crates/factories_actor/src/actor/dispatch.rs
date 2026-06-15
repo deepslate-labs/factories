@@ -1,12 +1,19 @@
-use crate::actor::work::{ErasedWork, WorkConverter};
+use crate::actor::work::WorkConverter;
 use crate::message::envelope::MessageEnvelope;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 
-/// The function a dispatcher casts the erased context back through.
-pub type ActorMessageDispatcherHandler = for<'ctx> unsafe fn(
-    DispatchContextPtr<'ctx>,
-    DispatchedActorMessageContext,
-) -> ErasedWork<'ctx>;
+/// The function a dispatcher writes its work through.
+///
+/// The dispatcher acquires the lock and builds the acquire-then-handle work, then
+/// writes that work - its actor's run loop's
+/// [`WorkConverter::Erased`](crate::actor::work::WorkConverter::Erased) - into
+/// `*out`. `out` points at uninitialized storage the caller
+/// ([`DispatchedActorMessage::dispatch_onto_loop`]) has allocated as exactly that
+/// concrete type. It is a thin `*mut ()` so this signature stays uniform across
+/// every actor/message pair regardless of their converter's `Erased` type.
+pub type ActorMessageDispatcherHandler =
+    for<'ctx> unsafe fn(DispatchContextPtr<'ctx>, DispatchedActorMessageContext, *mut ());
 
 /// Type-erased pointer to an actor's dispatch context, tagged with the lifetime
 /// during which the pointee is valid.
@@ -52,21 +59,25 @@ impl ActorMessageDispatcher {
         Self { handler }
     }
 
-    /// Invoke the dispatcher, producing the [`ErasedWork`] that acquires the
-    /// lock and runs the handler. The run loop drives this work to completion.
+    /// Invoke the dispatcher: it acquires the lock, builds the acquire-then-handle
+    /// work, and writes that work (the actor's converter's
+    /// [`Erased`](crate::actor::work::WorkConverter::Erased)) into `*out`.
     ///
     /// # Safety
     /// - `dispatch_context` must have been constructed from a reference to the
     ///   dispatch context of the actor type this dispatcher was bound for.
     /// - The envelope in `message_context` must carry a message of the type this
     ///   dispatcher was bound for.
+    /// - `out` must point to writable, uninitialized storage of exactly that
+    ///   actor's run loop's converter's `Erased` type (same size and alignment).
     /// - The caller must invoke this on the actor's thread.
     pub(crate) unsafe fn invoke(
         self,
         dispatch_context: DispatchContextPtr,
         message_context: DispatchedActorMessageContext,
-    ) -> ErasedWork {
-        unsafe { (self.handler)(dispatch_context, message_context) }
+        out: *mut (),
+    ) {
+        unsafe { (self.handler)(dispatch_context, message_context, out) }
     }
 }
 
@@ -144,7 +155,8 @@ macro_rules! declare_static_dispatcher {
         unsafe fn invoke<'ctx>(
             dispatch_context: $crate::actor::dispatch::DispatchContextPtr<'ctx>,
             message_context: $crate::actor::dispatch::DispatchedActorMessageContext,
-        ) -> $crate::actor::work::ErasedWork<'ctx> {
+            out: *mut (),
+        ) {
             type RunLoop = <$actor as $crate::actor::Actor>::RunLoop;
             type Converter = <RunLoop as $crate::actor::ActorRunLoop<$actor>>::WorkConverter;
             type Mode = <$actor as $crate::actor::MessageHandler<$message>>::AccessMode;
@@ -187,10 +199,21 @@ macro_rules! declare_static_dispatcher {
             };
 
             // Erase the acquire-then-handle composite through the same converter
-            // (proving its `Send`-ness here, concretely), then pack it into the
-            // opaque cell that crosses the uniform dispatcher fn-pointer.
+            // (proving its `Send`-ness here, concretely). The result is this
+            // actor's converter's `Erased`, exactly the type the caller allocated
+            // `out` for, so write it straight into that slot - no heap, no opaque
+            // cell to cross the uniform dispatcher fn-pointer.
             let erased = $crate::actor::work::into_work::<Converter, _>(composite);
-            $crate::actor::work::ErasedWork::pack(erased)
+
+            // SAFETY: The `StaticDispatcher` contract guarantees this dispatcher is
+            //         only invoked via `dispatch_onto_loop::<$actor>`, which sizes
+            //         `out` as `Converter::Erased<'ctx>` - exactly `erased`'s type.
+            //         The slot is uninitialized, so a plain write (no drop of the
+            //         prior contents) is correct.
+            unsafe {
+                out.cast::<<Converter as $crate::actor::work::WorkConverter>::Erased<'ctx>>()
+                    .write(erased);
+            }
         }
 
         // SAFETY: `invoke` above is generated for exactly this actor/message pair
@@ -256,20 +279,36 @@ impl DispatchedActorMessage {
     /// In addition to that must this method be called in an appropriate dispatch context. For most
     /// actors this means in the actor dispatch loop, unless pass through messaging is enabled
     /// for the actor.
-    pub unsafe fn dispatch_onto_loop<A: crate::actor::Actor + ?Sized>(
+    pub unsafe fn dispatch_onto_loop<'ctx, A: crate::actor::Actor + ?Sized>(
         self,
-        dispatch_context: &<A::RunLoop as crate::actor::ActorRunLoop<A>>::DispatchContext,
-    ) -> <<A::RunLoop as crate::actor::ActorRunLoop<A>>::WorkConverter as WorkConverter>::Erased<'_>
+        dispatch_context: &'ctx <A::RunLoop as crate::actor::ActorRunLoop<A>>::DispatchContext,
+    ) -> <<A::RunLoop as crate::actor::ActorRunLoop<A>>::WorkConverter as WorkConverter>::Erased<'ctx>
     {
+        type Erased<'c, A> =
+            <<<A as crate::actor::Actor>::RunLoop as crate::actor::ActorRunLoop<A>>::WorkConverter
+                as WorkConverter>::Erased<'c>;
+
         let (dispatcher, message_context) = self.into_parts();
 
-        let cell = unsafe {
-            dispatcher.invoke(DispatchContextPtr::new(dispatch_context), message_context)
-        };
+        // The dispatcher writes its `Erased` here - storage we own as the concrete
+        // type, since `A` (hence the converter's `Erased`) is known at this site.
+        // No heap: the value is moved once from the dispatcher's frame into ours.
+        let mut slot = MaybeUninit::<Erased<'ctx, A>>::uninit();
 
-        // SAFETY: the dispatcher was bound for `A` (this method's contract), so it
-        //         packed `A`'s run loop's converter's `Erased` into the cell.
-        unsafe { cell.unpack() }
+        // SAFETY: `dispatch_context` is `A`'s real dispatch context and `slot` is
+        //         sized as `A`'s converter's `Erased`, satisfying `invoke`'s
+        //         contract (the dispatcher was bound for `A`).
+        unsafe {
+            dispatcher.invoke(
+                DispatchContextPtr::new(dispatch_context),
+                message_context,
+                slot.as_mut_ptr().cast::<()>(),
+            );
+        }
+
+        // SAFETY: `invoke` returns only after writing `slot` (it always does on a
+        //         non-panicking path), so it is initialized.
+        unsafe { slot.assume_init() }
     }
 }
 
