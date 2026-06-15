@@ -7,6 +7,7 @@ use crate::actor::dispatch::{DispatchedActorMessage, DispatchedActorMessageConte
 use crate::actor::identity::{ActorIdentity, AnyActorIdentity};
 use crate::actor::rtti::ActorRtti;
 use crate::actor::state::SharedActorState;
+use crate::actor::supervision::{Subscription, Terminated, ActorId};
 use crate::actor::task::ActorTaskHandle;
 use crate::actor::{Actor, MessageHandler};
 use crate::message::Message;
@@ -14,7 +15,7 @@ use crate::message::channel::{AnswerReceiver, AnswerSender};
 use crate::message::envelope::MessageEnvelope;
 use crate::message::rtti::MessageRtti;
 use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 #[cfg(feature = "tokio-answer")]
 use core::future::{Future, IntoFuture};
 use core::marker::PhantomData;
@@ -54,6 +55,35 @@ impl<A: Actor + ?Sized> TypedActorHandle<A> {
     /// Access the shared state of this actor (lifecycle, failure error, task).
     pub fn state(&self) -> &SharedActorState<A> {
         &self.0.shared
+    }
+
+    /// Downgrade to a non-owning [`WeakActorHandle`].
+    ///
+    /// The weak handle observes the actor and can be upgraded back to a strong
+    /// handle while one still exists, but never keeps the actor alive on its own.
+    pub fn downgrade(&self) -> WeakActorHandle<A> {
+        WeakActorHandle(Arc::downgrade(&self.0))
+    }
+
+    /// Watch `watched`: when it terminates, a [`Terminated`] signal is pushed
+    /// into *this* actor's mailbox (handled by its
+    /// [`MessageHandler<Terminated>`]), carrying `tag` as the correlation key.
+    ///
+    /// Unidirectional and non-owning: the watch keeps neither actor alive (this
+    /// actor is held weakly on the watched side).
+    pub fn watch(&self, watched: &impl ActorHandle, tag: u64)
+    where
+        A: MessageHandler<Terminated> + 'static,
+        A::Channel: Send + Sync,
+        A::Error: Send + Sync,
+    {
+        register_watch::<A>(self.downgrade().erase(), self.state().id(), watched, tag);
+    }
+
+    /// Stop watching `watched`: remove every subscription this actor registered
+    /// on it. Idempotent; a no-op if not watching (or already fired).
+    pub fn unwatch(&self, watched: &impl ActorHandle) {
+        unregister_watch(self.state().id(), watched);
     }
 
     /// Type erase the actor handle into an untyped local handle.
@@ -147,6 +177,84 @@ impl<A: Actor + ?Sized> TypedActorHandle<A> {
             message,
             ask_gen: move |message: M| handle.ask(message).exchange(),
         })
+    }
+}
+
+/// A non-owning handle to an actor.
+///
+/// Holds a [`Weak`] to the actor's identity: it can be [`upgrade`](Self::upgrade)d
+/// to a strong [`TypedActorHandle`] while one still exists, but never keeps the
+/// actor alive by itself. This is what an actor hands out to be watched, and what
+/// backs [`ActorContext::weak_ref`](crate::actor::ActorContext)-style access.
+pub struct WeakActorHandle<A: Actor + ?Sized>(Weak<ActorIdentity<A>>);
+
+impl<A: Actor + ?Sized> WeakActorHandle<A> {
+    /// Create a dangling weak handle.
+    ///
+    /// This handle can never be upgraded.
+    pub const fn dangling() -> Self {
+        Self(Weak::new())
+    }
+
+    /// Upgrade to a strong handle, if the actor's identity is still alive.
+    ///
+    /// Returns `None` once the last strong handle is gone (e.g. the actor has
+    /// died, or is in its final drain after the last handle dropped).
+    pub fn upgrade(&self) -> Option<TypedActorHandle<A>> {
+        self.0.upgrade().map(TypedActorHandle)
+    }
+
+    /// Erase to a weak, `Send + Sync` identity reference.
+    ///
+    /// Used to register this actor as a watcher. The coercion is a plain
+    /// unsizing of the inner `Weak`, so no upgrade (and no live strong handle)
+    /// is required.
+    pub(crate) fn erase(self) -> Weak<dyn AnyActorIdentity + Send + Sync>
+    where
+        A: 'static,
+        A::Channel: Send + Sync,
+        A::Error: Send + Sync,
+    {
+        self.0
+    }
+}
+
+/// Register `watcher` (already erased) to be notified when `watched` terminates,
+/// binding the watcher's own `Terminated` dispatcher now. Shared by
+/// [`TypedActorHandle::watch`] and `ActorContext::watch`.
+pub(crate) fn register_watch<A>(
+    watcher: Weak<dyn AnyActorIdentity + Send + Sync>,
+    watcher_id: ActorId,
+    watched: &impl ActorHandle,
+    tag: u64,
+) where
+    A: MessageHandler<Terminated> + ?Sized,
+{
+    let dispatcher = <A as MessageHandler<Terminated>>::DISPATCHER.into_dispatcher();
+    let subscription = Subscription::new(watcher, watcher_id, dispatcher, tag);
+    // `identity()` (the sealed `ActorHandleBase`) is crate-internal, so the
+    // `Subscription` type never appears in a public signature.
+    watched.identity().add_subscription(subscription);
+}
+
+/// Remove every subscription registered by `watcher_id` on `watched`. Shared by
+/// the `unwatch` surfaces.
+pub(crate) fn unregister_watch(watcher_id: ActorId, watched: &impl ActorHandle) {
+    watched.identity().remove_subscriptions(watcher_id);
+}
+
+impl<A: Actor + ?Sized> Clone for WeakActorHandle<A> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<A: Actor + ?Sized> core::fmt::Debug for WeakActorHandle<A>
+where
+    Weak<ActorIdentity<A>>: core::fmt::Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("WeakActorHandle").field(&self.0).finish()
     }
 }
 

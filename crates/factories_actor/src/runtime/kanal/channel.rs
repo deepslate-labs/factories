@@ -217,6 +217,20 @@ impl<'a> KanalActorChannelSender<'a> {
         self.sender.send(message).map_err(Self::handle_send_error)
     }
 
+    /// Send a message without blocking or awaiting.
+    pub fn try_send(&self, message: DispatchedActorMessage) -> ActorChannelSendResult {
+        // See `send` for why this check exists.
+        if !message.envelope().is_sendable() {
+            return Err(ActorChannelSendError::NotSendable);
+        }
+
+        match self.sender.try_send(message) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ActorChannelSendError::MailboxFull),
+            Err(err) => Err(Self::handle_send_error(err)),
+        }
+    }
+
     fn handle_send_error(err: kanal::SendError) -> ActorChannelSendError {
         match err {
             kanal::SendError::Closed => ActorChannelSendError::ActorDead,
@@ -252,6 +266,14 @@ impl<'a> ActorChannelSendable<'a> for KanalChannelSendable<'a> {
         };
 
         sender.blocking_send(self.message)
+    }
+
+    fn try_send(self) -> ActorChannelSendResult {
+        let Some(sender) = self.sender else {
+            return Err(ActorChannelSendError::Unroutable);
+        };
+
+        sender.try_send(self.message)
     }
 }
 

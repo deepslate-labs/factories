@@ -8,6 +8,7 @@
 //! to their scheduling structure.
 
 use crate::actor::event::{EventContext, EventDriver};
+use crate::actor::handle::WeakActorHandle;
 use crate::actor::lifecycle::StopReason;
 use crate::actor::state::SharedActorState;
 use crate::actor::work::{FutureWorkConverter, into_work};
@@ -35,14 +36,21 @@ pub type StandardWork<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 pub struct StandardDispatchContext<A: Actor + ?Sized> {
     lock_strategy: A::LockStrategy,
     shared: SharedActorState<A>,
+    self_ref: WeakActorHandle<A>,
 }
 
 impl<A: Actor + ?Sized> StandardDispatchContext<A> {
-    /// Build the context from the actor's lock strategy and shared state.
-    pub fn new(lock_strategy: A::LockStrategy, shared: SharedActorState<A>) -> Self {
+    /// Build the context from the actor's lock strategy, shared state and weak
+    /// self-reference (the actor's own handle, used for [`ActorContext::actor_ref`]).
+    pub fn new(
+        lock_strategy: A::LockStrategy,
+        shared: SharedActorState<A>,
+        self_ref: WeakActorHandle<A>,
+    ) -> Self {
         Self {
             lock_strategy,
             shared,
+            self_ref,
         }
     }
 
@@ -101,25 +109,36 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         let StandardDispatchContext {
             lock_strategy,
             shared,
+            self_ref,
         } = self;
 
         // Observable transition; a no-op if the actor never reached `Running`.
         shared.transition_stopping();
 
-        let reason = match shared.get_error() {
+        let reason = match shared.failed_error() {
             Some(error) => StopReason::Failed(error),
-            None => StopReason::Finished,
+            None => {
+                // Record the clean outcome before reclaiming the actor, so the
+                // reason is observable as soon as the loop has quiesced.
+                shared.mark_finished();
+                StopReason::Finished
+            }
         };
 
         // Sole owner now: reclaim the actor by value for the by-value stop hook,
         // erase its work through the loop's converter, and drive it.
         let actor = lock_strategy.into_inner();
-        let cx = ActorContext::new(&shared);
+        let cx = ActorContext::new(&shared, &self_ref);
         let stop = into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(
             actor.on_stop(reason, cx),
         );
         <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(stop)
             .await;
+
+        // Push termination signals to watchers on the async path, awaiting
+        // mailbox room so none are dropped. Drains the set, so the drop guard's
+        // non-awaiting fallback is a no-op for this (clean / failed) path.
+        shared.notify_subscribers().await;
     }
 }
 
@@ -130,6 +149,10 @@ impl<A: Actor + ?Sized> ActorRunLoopDispatchContext<A> for StandardDispatchConte
 
     fn shared_state(&self) -> &SharedActorState<A> {
         &self.shared
+    }
+
+    fn self_ref(&self) -> &WeakActorHandle<A> {
+        &self.self_ref
     }
 }
 
@@ -152,8 +175,13 @@ where
 /// [`standard_run_with`] (which the loop's
 /// [`SpawnableRunLoop`](crate::spawn::SpawnableRunLoop) delegates to).
 pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
-    /// Assemble the loop from the actor's lock strategy and shared state.
-    fn build(lock_strategy: A::LockStrategy, shared: SharedActorState<A>) -> Self;
+    /// Assemble the loop from the actor's lock strategy, shared state and weak
+    /// self-reference.
+    fn build(
+        lock_strategy: A::LockStrategy,
+        shared: SharedActorState<A>,
+        self_ref: WeakActorHandle<A>,
+    ) -> Self;
 
     /// Drive the loop. This is the loop's whole identity - how it schedules the
     /// handler futures produced each turn by
@@ -169,6 +197,7 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync,
+        WeakActorHandle<A>: Send + Sync,
         <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter;
 }
 
@@ -180,6 +209,7 @@ pub fn standard_run_with<A, L, I, M>(
     init: I,
     shared: SharedActorState<A>,
     mailbox: M,
+    self_ref: WeakActorHandle<A>,
 ) -> impl Future<Output = ()> + Send + 'static
 where
     A: Actor<RunLoop = L> + Into<A::LockStrategy> + Send,
@@ -189,6 +219,7 @@ where
     A::EventDriver: EventDriver<A, M> + Send,
     A::LockStrategy: Send + Sync,
     A::Error: Send + Sync + 'static,
+    WeakActorHandle<A>: Send + Sync,
     M: Send + 'static,
     <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
 {
@@ -212,7 +243,7 @@ where
             // yet behind its lock (plain `&mut`), and a waiter on `spawn_ready`
             // only observes `Running` once startup has completed.
             {
-                let cx = ActorContext::new(&shared);
+                let cx = ActorContext::new(&shared, &self_ref);
                 let start = into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(
                     actor.on_start(cx),
                 );
@@ -224,7 +255,7 @@ where
 
             // A failing start hook aborts startup before the loop runs - and the
             // stop hook does not run, since the actor never reached `Running`.
-            if shared.get_error().is_some() {
+            if shared.failed_error().is_some() {
                 return;
             }
             shared.transition_running();
@@ -235,7 +266,9 @@ where
             lock_strategy = actor.into();
         }
 
-        L::build(lock_strategy, shared).run(mailbox, driver).await;
+        L::build(lock_strategy, shared, self_ref)
+            .run(mailbox, driver)
+            .await;
     }
 }
 
@@ -255,7 +288,7 @@ where
     match init.init().await {
         Ok(actor) => Some(actor),
         Err(err) => {
-            let _ = shared.set_error(err);
+            shared.record_failure(err);
             None
         }
     }

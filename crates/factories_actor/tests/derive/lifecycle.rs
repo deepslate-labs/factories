@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 
 use factories_actor::actor::lifecycle::StopReason;
 use factories_actor::actor::{Actor, ActorContext};
-use factories_actor::actor::state::LifecycleState;
 use factories_actor::runtime::lock::UnguardedLock;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
@@ -75,14 +74,7 @@ async fn derived_lifecycle_hooks_run_in_order() {
     let state = handle.state().clone();
     drop(handle);
 
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while state.lifecycle() != LifecycleState::Dead {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "actor must die after the last handle is dropped"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    state.wait_for_terminal().await;
 
     assert_eq!(
         log.snapshot(),

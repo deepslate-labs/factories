@@ -35,6 +35,7 @@ futures = { workspace = true, features = ["alloc"] }
 tracing = { workspace = true, optional = true }
 pin-project = { workspace = true }
 once_cell = { workspace = true, features = ["critical-section"] }
+critical-section = { workspace = true }
 
 paste = { workspace = true }
 factories_rtti = { workspace = true }

@@ -1,5 +1,5 @@
 use crate::actor::event::EventDriver;
-use crate::actor::handle::TypedActorHandle;
+use crate::actor::handle::{TypedActorHandle, WeakActorHandle};
 use crate::actor::state::{LifecycleState, SharedActorState};
 use crate::actor::{Actor, ActorInit};
 use crate::spawn::{ActorTaskSpawner, CreatableChannel, IntoActorInit, SpawnableRunLoop};
@@ -62,6 +62,7 @@ where
     A::RunLoop: SpawnableRunLoop<A>,
     A::Error: Send + Sync + 'static,
     A::EventDriver: EventDriver<A, <A::Channel as CreatableChannel>::Mailbox> + Send,
+    WeakActorHandle<A>: Send + Sync,
 {
     /// Assemble and fire. The initializer crosses into the spawned task, where
     /// [`ActorInit::init`] constructs the actor.
@@ -98,7 +99,7 @@ where
         let handle = self.assemble(spawner, init);
 
         match handle.state().wait_leave_starting().await {
-            LifecycleState::Dead => match handle.state().get_error() {
+            LifecycleState::Dead => match handle.state().failed_error() {
                 Some(error) => Err(error.clone()),
                 None => Ok(handle.into()),
             },
@@ -117,10 +118,20 @@ where
         let (channel, mailbox) = A::Channel::create(self.channel_options);
         let shared = SharedActorState::new();
 
-        let fut = A::RunLoop::run_with(self.loop_config, init.into_init(), shared.clone(), mailbox);
-        let task = spawner.spawn(fut);
-        let _ = shared.attach_task(task);
+        // Build the identity (handle) before spawning, so the loop can be handed
+        // the actor's own weak self-reference for `ctx.actor_ref()`.
+        let handle = TypedActorHandle::assemble(channel, self.binder, shared.clone());
 
-        TypedActorHandle::assemble(channel, self.binder, shared)
+        let fut = A::RunLoop::run_with(
+            self.loop_config,
+            init.into_init(),
+            shared,
+            mailbox,
+            handle.downgrade(),
+        );
+        let task = spawner.spawn(fut);
+        let _ = handle.state().attach_task(task);
+
+        handle
     }
 }

@@ -280,6 +280,10 @@ mod tests {
         fn blocking_send(self) -> ActorChannelSendResult {
             unimplemented!("the lock test actor cannot be messaged")
         }
+
+        fn try_send(self) -> ActorChannelSendResult {
+            unimplemented!("the lock test actor cannot be messaged")
+        }
     }
 
     struct LockActorLoop;
@@ -300,6 +304,10 @@ mod tests {
         }
 
         fn shared_state(&self) -> &crate::actor::state::SharedActorState<LockActor> {
+            unimplemented!("the lock test actor is never driven")
+        }
+
+        fn self_ref(&self) -> &crate::actor::handle::WeakActorHandle<LockActor> {
             unimplemented!("the lock test actor is never driven")
         }
     }

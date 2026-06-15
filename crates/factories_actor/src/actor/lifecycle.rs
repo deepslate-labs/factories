@@ -27,6 +27,67 @@ pub enum StopReason<'a, A: Actor + ?Sized> {
     Failed(&'a A::Error),
 }
 
+/// The recorded outcome of an actor, observable through
+/// [`SharedActorState::termination_reason`](crate::actor::state::SharedActorState::termination_reason).
+pub enum TerminationReason<A: Actor + ?Sized> {
+    /// The run loop drained and exited cleanly.
+    Finished,
+
+    /// A handler - or the start hook / init - failed the actor. Carries the
+    /// error recorded with [`ActorContext::fail`](crate::actor::ActorContext::fail).
+    Failed(A::Error),
+
+    /// The actor reached [`Dead`](crate::actor::state::LifecycleState::Dead) with
+    /// no outcome recorded: a panic unwound the loop, or the task was aborted.
+    Aborted,
+}
+
+impl<A: Actor + ?Sized> TerminationReason<A> {
+    /// The error-free discriminant of this reason.
+    ///
+    /// This is what watchers observe: a heterogeneous supervisor cannot name a
+    /// child's concrete `A::Error`, so the pushed [`Terminated`](crate::actor::supervision::Terminated)
+    /// signal carries the [`TerminationKind`] only.
+    pub fn kind(&self) -> TerminationKind {
+        match self {
+            Self::Finished => TerminationKind::Finished,
+            Self::Failed(_) => TerminationKind::Failed,
+            Self::Aborted => TerminationKind::Aborted,
+        }
+    }
+}
+
+impl<A: Actor + ?Sized> Debug for TerminationReason<A>
+where
+    A::Error: Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Finished => f.write_str("Finished"),
+            Self::Failed(error) => f.debug_tuple("Failed").field(error).finish(),
+            Self::Aborted => f.write_str("Aborted"),
+        }
+    }
+}
+
+/// The error-free outcome of an actor, as observed by a watcher.
+///
+/// The non-generic projection of [`TerminationReason`] (it drops the typed
+/// `A::Error`), carried by the [`Terminated`](crate::actor::supervision::Terminated)
+/// signal pushed to watchers.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum TerminationKind {
+    /// The run loop drained and exited cleanly.
+    Finished,
+
+    /// A handler, the start hook, or init failed the actor.
+    Failed,
+
+    /// The actor reached [`Dead`](crate::actor::state::LifecycleState::Dead)
+    /// with no recorded outcome: a panic, or a task abort.
+    Aborted,
+}
+
 // `&A::Error` is `Copy` regardless of `A::Error`, so the reason is freely
 // copyable; the manual impls avoid the spurious `A: Copy`/`Clone` bounds a
 // derive would add.

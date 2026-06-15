@@ -18,6 +18,7 @@ pub mod identity;
 pub mod lifecycle;
 pub mod rtti;
 pub mod state;
+pub mod supervision;
 pub mod task;
 pub mod work;
 
@@ -171,6 +172,7 @@ pub trait AccessMode<A: Actor + ?Sized> {
 pub struct MessageHandlerContext<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A> + 'a> {
     actor_access: E::Guard<'a>,
     actor_state: &'a SharedActorState<A>,
+    self_ref: &'a handle::WeakActorHandle<A>,
     envelope: MessageEnvelope,
     _data: PhantomData<(M, fn() -> A, E)>,
 }
@@ -179,10 +181,13 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
     /// Create a new message handler context.
     ///
     /// Creation only succeeds if the envelope actually carries the correct message
-    /// type.
+    /// type. `self_ref` is the actor's own weak handle, supplied by the run loop's
+    /// dispatch context (see [`ActorRunLoopDispatchContext::self_ref`]); pass
+    /// `None` from a loop that does not provide one.
     pub fn new(
         actor_access: E::Guard<'a>,
         actor_state: &'a SharedActorState<A>,
+        self_ref: &'a handle::WeakActorHandle<A>,
         envelope: MessageEnvelope,
     ) -> Result<Self, MessageEnvelope> {
         if envelope.rtti() != M::RTTI {
@@ -191,7 +196,7 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
         }
 
         // SAFETY: We checked that M is indeed the payload type of the envelope
-        Ok(unsafe { Self::new_unchecked(actor_access, actor_state, envelope) })
+        Ok(unsafe { Self::new_unchecked(actor_access, actor_state, self_ref, envelope) })
     }
 
     /// Create a new message handler context.
@@ -202,22 +207,24 @@ impl<'a, M: Message, A: Actor + ?Sized, E: AccessMode<A>> MessageHandlerContext<
     pub unsafe fn new_unchecked(
         actor_access: E::Guard<'a>,
         actor_state: &'a SharedActorState<A>,
+        self_ref: &'a handle::WeakActorHandle<A>,
         envelope: MessageEnvelope,
     ) -> Self {
         Self {
             actor_access,
             actor_state,
+            self_ref,
             envelope,
             _data: PhantomData,
         }
     }
 
-    /// The actor's own runtime services (failing the actor, lifecycle).
+    /// The actor's own runtime services (failing the actor, lifecycle, self-ref).
     ///
     /// The returned value borrows the run loop's state, not this context: it
     /// can be grabbed first and stays usable after the context is decomposed.
     pub fn actor_context(&self) -> ActorContext<'a, A> {
-        ActorContext::new(self.actor_state)
+        ActorContext::new(self.actor_state, self.self_ref)
     }
 
     /// Access the actor guard.
@@ -371,6 +378,14 @@ pub trait ActorRunLoopDispatchContext<A: Actor + ?Sized> {
 
     /// The state shared between the run loop and the actor's handles.
     fn shared_state(&self) -> &SharedActorState<A>;
+
+    /// The actor's own weak self-reference.
+    ///
+    /// Every actor has an identity, so every dispatch context carries one; it
+    /// powers [`ActorContext::weak_ref`] / [`ActorContext::actor_ref`]. A run
+    /// loop obtains it before spawning (the identity exists first) and threads
+    /// it into its dispatch context.
+    fn self_ref(&self) -> &handle::WeakActorHandle<A>;
 }
 
 /// Handle to the actor's own runtime services, available to message handlers
@@ -381,12 +396,59 @@ pub trait ActorRunLoopDispatchContext<A: Actor + ?Sized> {
 /// shared state.
 pub struct ActorContext<'a, A: Actor + ?Sized> {
     state: &'a SharedActorState<A>,
+    self_ref: &'a handle::WeakActorHandle<A>,
 }
 
 impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
-    /// Create a context over the actor's shared state.
-    pub fn new(state: &'a SharedActorState<A>) -> Self {
-        Self { state }
+    /// Create a context over the actor's shared state and weak self-reference.
+    pub fn new(
+        state: &'a SharedActorState<A>,
+        self_ref: &'a handle::WeakActorHandle<A>,
+    ) -> Self {
+        Self { state, self_ref }
+    }
+
+    /// The actor's own weak handle.
+    ///
+    /// Always available - it is what an actor hands out to be watched, and never
+    /// keeps the actor alive on its own.
+    pub fn weak_ref(&self) -> handle::WeakActorHandle<A> {
+        self.self_ref.clone()
+    }
+
+    /// A strong handle to this actor, if one still exists.
+    ///
+    /// Upgrades the weak self-reference. Returns `None` only when no strong
+    /// handle survives - the last external handle dropped and the actor is in
+    /// its final drain. In the normal case a handler runs while a strong handle
+    /// exists, so this is `Some`.
+    pub fn actor_ref(&self) -> Option<handle::TypedActorHandle<A>>
+    where
+        A: Sized,
+    {
+        self.self_ref.upgrade()
+    }
+
+    /// Watch `watched` from this actor: a [`Terminated`](supervision::Terminated)
+    /// tagged `tag` is pushed into this actor's mailbox when `watched` stops.
+    ///
+    /// The in-handler counterpart of
+    /// [`TypedActorHandle::watch`](handle::TypedActorHandle::watch): it uses this
+    /// actor's own weak self-reference, so no handle to self is needed. Requires
+    /// `Self: MessageHandler<Terminated>`.
+    pub fn watch(&self, watched: &impl handle::ActorHandle, tag: u64)
+    where
+        A: MessageHandler<supervision::Terminated> + 'static,
+        A::Channel: Send + Sync,
+        A::Error: Send + Sync,
+    {
+        handle::register_watch::<A>(self.self_ref.clone().erase(), self.state.id(), watched, tag);
+    }
+
+    /// Stop watching `watched`: remove every subscription this actor registered
+    /// on it. Idempotent.
+    pub fn unwatch(&self, watched: &impl handle::ActorHandle) {
+        handle::unregister_watch(self.state.id(), watched);
     }
 
     /// Fail the actor: record `error` and stop the run loop.
@@ -397,7 +459,7 @@ impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
     /// transitions the lifecycle to [`Dead`](state::LifecycleState::Dead).
     /// As on the init path, the error is observable before `Dead` is.
     pub fn fail(&self, error: A::Error) {
-        let _ = self.state.set_error(error);
+        self.state.record_failure(error);
     }
 
     /// The current lifecycle state of the actor.
@@ -422,7 +484,7 @@ impl<A: Actor + ?Sized> Clone for ActorContext<'_, A> {
 
 impl<A: Actor + ?Sized> Debug for ActorContext<'_, A>
 where
-    A::Error: Debug,
+    SharedActorState<A>: Debug,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ActorContext")

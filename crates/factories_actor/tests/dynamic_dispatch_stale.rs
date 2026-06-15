@@ -54,6 +54,10 @@ impl ActorChannelSendable<'_> for StaleSendable {
     fn blocking_send(self) -> ActorChannelSendResult {
         unimplemented!("the stale test actor cannot be messaged")
     }
+
+    fn try_send(self) -> ActorChannelSendResult {
+        unimplemented!("the stale test actor cannot be messaged")
+    }
 }
 
 struct StaleLoop;
@@ -71,6 +75,10 @@ impl ActorRunLoopDispatchContext<StaleActor> for StaleLoopContext {
     }
 
     fn shared_state(&self) -> &factories_actor::actor::state::SharedActorState<StaleActor> {
+        unimplemented!("the stale test actor is never driven")
+    }
+
+    fn self_ref(&self) -> &factories_actor::actor::handle::WeakActorHandle<StaleActor> {
         unimplemented!("the stale test actor is never driven")
     }
 }
@@ -159,6 +167,7 @@ static LATE_ENTRY: GlobalCollectionEntry<DynamicHandlerRegistration> =
 // staleness transition.
 
 #[test]
+#[cfg(panic = "unwind")]
 fn late_registrations_are_detected() {
     // Freeze the registry. The load-time registration is part of it.
     let registry = dispatch_registry();
@@ -180,17 +189,20 @@ fn late_registrations_are_detected() {
         "late registrations must not receive an ID"
     );
 
-    // Debug builds catch the stale registry at binder construction. Suppress
-    // the expected panic output to keep the test log clean.
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(|| {
-        let _ = RegistryBinder::<StaleActor>::new();
-    });
-    std::panic::set_hook(hook);
+    #[cfg(panic = "unwind")]
+    {
+        // Debug builds catch the stale registry at binder construction. Suppress
+        // the expected panic output to keep the test log clean.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(|| {
+            let _ = RegistryBinder::<StaleActor>::new();
+        });
+        std::panic::set_hook(hook);
 
-    assert!(
-        result.is_err(),
-        "constructing a binder against a stale registry must panic in debug builds"
-    );
+        assert!(
+            result.is_err(),
+            "constructing a binder against a stale registry must panic in debug builds"
+        );   
+    }
 }

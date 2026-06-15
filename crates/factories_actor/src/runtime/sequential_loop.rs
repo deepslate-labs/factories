@@ -1,4 +1,5 @@
 use crate::actor::event::EventDriver;
+use crate::actor::handle::WeakActorHandle;
 use crate::actor::state::SharedActorState;
 use crate::actor::work::SendFutureConverter;
 use crate::actor::{Actor, ActorRunLoop, SerializedDispatch};
@@ -20,9 +21,13 @@ pub struct SequentialRunLoop<A: Actor + ?Sized> {
 }
 
 impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A> {
-    fn build(lock_strategy: A::LockStrategy, shared: SharedActorState<A>) -> Self {
+    fn build(
+        lock_strategy: A::LockStrategy,
+        shared: SharedActorState<A>,
+        self_ref: WeakActorHandle<A>,
+    ) -> Self {
         Self {
-            dispatch_context: StandardDispatchContext::new(lock_strategy, shared),
+            dispatch_context: StandardDispatchContext::new(lock_strategy, shared, self_ref),
         }
     }
 
@@ -35,10 +40,11 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
         M: Send + 'static,
         A::LockStrategy: Send + Sync,
         A::Error: Send + Sync,
+        WeakActorHandle<A>: Send + Sync,
     {
         loop {
             // A handler failed the actor: stop pulling (the stop hook still runs).
-            if self.dispatch_context.shared().get_error().is_some() {
+            if self.dispatch_context.shared().failed_error().is_some() {
                 break;
             }
 
@@ -92,13 +98,15 @@ where
         init: I,
         shared: SharedActorState<A>,
         mailbox: MB,
+        self_ref: WeakActorHandle<A>,
     ) -> impl Future<Output = ()> + Send + 'static
     where
         I: crate::actor::ActorInit<A> + Send + 'static,
         I::Fut: Send,
         MB: Send + 'static,
         A::EventDriver: EventDriver<A, MB> + Send,
+        WeakActorHandle<A>: Send + Sync,
     {
-        loop_support::standard_run_with::<A, Self, I, MB>(init, shared, mailbox)
+        loop_support::standard_run_with::<A, Self, I, MB>(init, shared, mailbox, self_ref)
     }
 }

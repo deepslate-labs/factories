@@ -61,16 +61,9 @@ impl FragileConcurrent {
 
 // -- Tests ----------------------------------------------------------------------
 
-/// Wait until the actor's lifecycle reaches `Dead` (bounded).
+/// Wait until the actor's lifecycle reaches `Dead`.
 async fn wait_dead<A: Actor>(state: &SharedActorState<A>) {
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while state.lifecycle() != LifecycleState::Dead {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "actor must die after failing"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-    }
+    state.wait_for_terminal().await;
 }
 
 #[tokio::test]
@@ -105,7 +98,7 @@ async fn die_on_err_forwards_error_and_kills() {
     );
 
     wait_dead(handle.state()).await;
-    assert_eq!(handle.state().get_error(), Some(&Boom(100)));
+    assert_eq!(handle.state().failed_error(), Some(&Boom(100)));
 }
 
 #[tokio::test]
@@ -135,7 +128,7 @@ async fn die_on_err_consume_closes_answer_and_kills() {
     );
 
     wait_dead(handle.state()).await;
-    assert_eq!(handle.state().get_error(), Some(&Boom(100)));
+    assert_eq!(handle.state().failed_error(), Some(&Boom(100)));
 }
 
 #[tokio::test]
@@ -150,7 +143,7 @@ async fn context_fail_kills_actor() {
     handle.tell(Poison).send().await.expect("tell");
 
     wait_dead(handle.state()).await;
-    assert_eq!(handle.state().get_error(), Some(&Boom(0)));
+    assert_eq!(handle.state().failed_error(), Some(&Boom(0)));
 }
 
 #[tokio::test]
@@ -172,5 +165,5 @@ async fn die_on_err_on_concurrent_loop() {
     );
 
     wait_dead(handle.state()).await;
-    assert_eq!(handle.state().get_error(), Some(&Boom(100)));
+    assert_eq!(handle.state().failed_error(), Some(&Boom(100)));
 }

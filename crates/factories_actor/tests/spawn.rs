@@ -7,11 +7,14 @@
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
 use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
 use factories_actor::actor::event::{DefaultMailboxDriver, EventContext, EventDriver};
-use factories_actor::actor::handle::{AskError, Calling, MessageCall, TypedActorHandle};
+use factories_actor::actor::handle::{
+    AskError, Calling, MessageCall, TypedActorHandle, WeakActorHandle,
+};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
 use factories_actor::actor::work::IntoRunLoopWork;
-use factories_actor::actor::lifecycle::StopReason;
+use factories_actor::actor::lifecycle::{StopReason, TerminationKind, TerminationReason};
+use factories_actor::actor::supervision::Terminated;
 use factories_actor::actor::{
     AccessMode, Actor, ActorContext, ActorInit, ActorRunLoop, LockStrategy, MessageHandler,
     MessageHandlerContext, StaticOnlyBinder,
@@ -282,6 +285,15 @@ async fn sends_after_init_failure_report_dead() {
         LifecycleState::Dead
     );
 
+    // The recorded termination reason carries the init failure.
+    assert!(
+        matches!(
+            handle.state().termination_reason(),
+            Some(TerminationReason::Failed(InitError))
+        ),
+        "init failure records Failed(InitError)"
+    );
+
     let result = handle
         .tell(SetGreeting {
             greeting: "won't arrive".into(),
@@ -432,23 +444,25 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
     // Step 2: shared state
     let shared = SharedActorState::<Greeter>::new();
 
-    // Step 3: run loop future from config + parts
+    // Step 3: assemble the handle (identity exists before the loop, so the loop
+    // can be given the actor's own weak self-reference)
+    let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared.clone());
+
+    // Step 4: run loop future from config + parts, handed the weak self-ref
     let fut = <ConcurrentRunLoop<Greeter> as SpawnableRunLoop<Greeter>>::run_with(
         (),
         GreeterInit {
             greeting: "Moin".into(),
             fail: false,
         },
-        shared.clone(),
+        shared,
         mailbox,
+        handle.downgrade(),
     );
 
-    // Step 4: spawn + attach the task
+    // Step 5: spawn + attach the task
     let task = spawner.spawn(fut);
-    let _ = shared.attach_task(task);
-
-    // Step 5: assemble the handle
-    let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
+    let _ = handle.state().attach_task(task);
 
     let reply = handle
         .ask(Greet {
@@ -550,6 +564,7 @@ mod custom_loop_scenario {
     struct SequentialDispatchContext {
         lock: CounterLock,
         shared: SharedActorState<Counter>,
+        self_ref: WeakActorHandle<Counter>,
     }
 
     impl ActorRunLoopDispatchContext<Counter> for SequentialDispatchContext {
@@ -559,6 +574,10 @@ mod custom_loop_scenario {
 
         fn shared_state(&self) -> &SharedActorState<Counter> {
             &self.shared
+        }
+
+        fn self_ref(&self) -> &WeakActorHandle<Counter> {
+            &self.self_ref
         }
     }
 
@@ -570,11 +589,13 @@ mod custom_loop_scenario {
     async fn drive_counter(
         counter: Counter,
         shared: SharedActorState<Counter>,
+        self_ref: WeakActorHandle<Counter>,
         mut mailbox: impl ActorMailbox + Send,
     ) {
         let ctx = SequentialDispatchContext {
             lock: counter.into(),
             shared,
+            self_ref,
         };
 
         while let Some(message) = mailbox.receive().await {
@@ -596,20 +617,284 @@ mod custom_loop_scenario {
             <SimpleKanalActorChannel as CreatableChannel>::create(Default::default());
         let shared = SharedActorState::<Counter>::new();
 
+        // Assemble the handle before the loop, so the loop's dispatch context can
+        // carry the actor's own weak self-reference.
+        let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared.clone());
+        let self_ref = handle.downgrade();
+
         // The custom loop manages its own lifecycle reporting.
         let loop_shared = shared.clone();
         let task = spawner.spawn(async move {
             let _guard = loop_shared.dead_on_drop();
             loop_shared.transition_running();
-            drive_counter(Counter { count: 0 }, loop_shared.clone(), mailbox).await;
+            drive_counter(Counter { count: 0 }, loop_shared.clone(), self_ref, mailbox).await;
         });
-        let _ = shared.attach_task(task);
-
-        let handle = TypedActorHandle::assemble(channel, StaticOnlyBinder, shared);
+        let _ = handle.state().attach_task(task);
 
         assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 1);
         assert_eq!(handle.ask(Increment).exchange().await.expect("ask"), 2);
     }
+}
+
+// -- Supervision: watch -> Terminated push -------------------------------------
+//
+// A `Supervisor` watches another actor and records the `Terminated` signals
+// pushed into its mailbox when a watched actor stops. The watcher is an ordinary
+// actor with a `MessageHandler<Terminated>` - no special driver, no special
+// extension beyond its own log.
+
+#[derive(Default, Clone)]
+struct DeathLog(std::sync::Arc<std::sync::Mutex<Vec<(u64, TerminationKind)>>>);
+
+impl DeathLog {
+    fn record(&self, tag: u64, kind: TerminationKind) {
+        self.0.lock().expect("death log").push((tag, kind));
+    }
+
+    fn snapshot(&self) -> Vec<(u64, TerminationKind)> {
+        self.0.lock().expect("death log").clone()
+    }
+}
+
+struct Supervisor;
+
+declare_actor_rtti!(SUPERVISOR_RTTI, Supervisor);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Supervisor {
+    const RTTI: &'static ActorRtti = SUPERVISOR_RTTI;
+
+    type Channel = SimpleKanalActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Supervisor>;
+    type RunLoop = SequentialRunLoop<Supervisor>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = DeathLog;
+    type EventDriver = DefaultMailboxDriver;
+}
+
+impl MessageHandler<Terminated> for Supervisor {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Supervisor, Terminated> =
+        declare_static_dispatcher!(Supervisor, Terminated);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, Terminated, Self, lock::Exclusive>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, message, _) = ctx.into_parts();
+            actor_cx.extension().record(message.tag(), message.kind());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GetDeaths;
+declare_message!(GetDeaths, Vec<(u64, TerminationKind)>);
+
+impl MessageHandler<GetDeaths> for Supervisor {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Supervisor, GetDeaths> =
+        declare_static_dispatcher!(Supervisor, GetDeaths);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, GetDeaths, Self, lock::Exclusive>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            if let Some(answer) = answer {
+                let _ = answer.send(actor_cx.extension().snapshot());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn watcher_receives_terminated_on_clean_finish() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, Tally { total: 0 })
+        .await
+        .expect("tally init is infallible");
+
+    // Unidirectional, explicit: the supervisor watches the tally under tag 42.
+    watcher.watch(&watched, 42);
+
+    // Drop the watched's last handle: it drains, finishes, and pushes a
+    // `Terminated` into the supervisor's mailbox.
+    let watched_state = watched.state().clone();
+    drop(watched);
+    watched_state.wait_for_terminal().await;
+
+    // The Terminated was enqueued before this query (FIFO), so the supervisor
+    // has already recorded it.
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, vec![(42, TerminationKind::Finished)]);
+}
+
+// A watched actor that fails on demand, to exercise the `Failed` kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Kaboom;
+
+struct Fragile;
+
+declare_actor_rtti!(FRAGILE_RTTI, Fragile);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Fragile {
+    const RTTI: &'static ActorRtti = FRAGILE_RTTI;
+
+    type Channel = SimpleKanalActorChannel;
+    type Error = Kaboom;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Fragile>;
+    type RunLoop = SequentialRunLoop<Fragile>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedStateExtension = ();
+    type EventDriver = DefaultMailboxDriver;
+}
+
+#[derive(Debug)]
+struct Detonate;
+declare_message!(Detonate, ());
+
+impl MessageHandler<Detonate> for Fragile {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Fragile, Detonate> =
+        declare_static_dispatcher!(Fragile, Detonate);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, Detonate, Self, lock::Exclusive>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            actor_cx.fail(Kaboom);
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn watcher_receives_terminated_on_failure() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, Fragile)
+        .await
+        .expect("fragile init is infallible");
+
+    watcher.watch(&watched, 7);
+
+    // Failing the actor drives it to `Dead` even while a handle is held.
+    let watched_state = watched.state().clone();
+    watched.tell(Detonate).send().await.expect("tell");
+    watched_state.wait_for_terminal().await;
+
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, vec![(7, TerminationKind::Failed)]);
+}
+
+#[tokio::test]
+async fn unwatch_stops_delivery() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, Tally { total: 0 })
+        .await
+        .expect("tally init is infallible");
+
+    watcher.watch(&watched, 1);
+    watcher.unwatch(&watched);
+
+    let watched_state = watched.state().clone();
+    drop(watched);
+    watched_state.wait_for_terminal().await;
+
+    // Any erroneous signal would have been enqueued before this query; the
+    // supervisor recorded nothing because the watch was removed.
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, Vec::new());
+}
+
+// A message carrying a handle, so a handler can `ctx.watch` it.
+#[derive(Debug)]
+struct WatchIt(TypedActorHandle<Tally>);
+declare_message!(WatchIt, ());
+
+impl MessageHandler<WatchIt> for Supervisor {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Supervisor, WatchIt> =
+        declare_static_dispatcher!(Supervisor, WatchIt);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, WatchIt, Self, lock::Exclusive>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, message, answer) = ctx.into_parts();
+            // Watch from inside a handler via the actor's own context - no handle
+            // to self required. The carried target handle drops at block end, so
+            // it does not keep the target alive.
+            actor_cx.watch(&message.0, 99);
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn ctx_watch_registers_from_handler() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, Tally { total: 0 })
+        .await
+        .expect("tally init is infallible");
+
+    // The supervisor watches the tally from within its WatchIt handler. The ask
+    // resolves once the watch is registered.
+    watcher
+        .ask(WatchIt(watched.clone()))
+        .exchange()
+        .await
+        .expect("watch-it ask");
+
+    let watched_state = watched.state().clone();
+    drop(watched);
+    watched_state.wait_for_terminal().await;
+
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, vec![(99, TerminationKind::Finished)]);
 }
 
 // -- Death on dropped handles -----------------------------------------------------
@@ -634,14 +919,8 @@ async fn lifecycle_dead_after_handle_dropped() {
 
     // Dropping the last handle drops the channel senders, the mailbox closes,
     // the loop exits and the lifecycle transitions to dead.
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while state.lifecycle() != LifecycleState::Dead {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "actor must die after the last handle is dropped"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    state.wait_for_terminal().await;
+    assert_eq!(state.lifecycle(), LifecycleState::Dead);
 }
 
 // -- Framework sequential set: SequentialRunLoop + UnguardedLock ----------------
@@ -703,6 +982,80 @@ async fn sequential_loop_with_unguarded_lock() {
 
     assert_eq!(handle.ask(Bump(2)).exchange().await.expect("ask"), 2);
     assert_eq!(handle.ask(Bump(3)).exchange().await.expect("ask"), 5);
+}
+
+// A handler that reaches back to the actor itself through `ctx.actor_ref()` and
+// self-sends. Proves the self-reference is present during execution and wired to
+// the right mailbox.
+#[derive(Debug)]
+struct KickSelf;
+declare_message!(KickSelf, ());
+
+impl MessageHandler<KickSelf> for Tally {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Tally, KickSelf> =
+        declare_static_dispatcher!(Tally, KickSelf);
+
+    fn handle<'a>(
+        ctx: MessageHandlerContext<'a, KickSelf, Self, lock::Exclusive>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+
+            let me = actor_cx
+                .actor_ref()
+                .expect("a strong self handle exists while a handler runs");
+            me.tell(Bump(5)).send().await.expect("self-send");
+
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn actor_can_message_itself_via_self_ref() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Tally { total: 0 })
+        .await
+        .expect("tally init is infallible");
+
+    // The KickSelf handler self-sends Bump(5).
+    handle.ask(KickSelf).exchange().await.expect("kick");
+
+    // Sequential processing: the self-sent Bump(5) is drained before this query.
+    assert_eq!(handle.ask(Bump(0)).exchange().await.expect("ask"), 5);
+}
+
+#[tokio::test]
+async fn weak_handle_upgrades_while_alive_and_fails_after_death() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Tally { total: 0 })
+        .await
+        .expect("tally init is infallible");
+
+    let weak: WeakActorHandle<Tally> = handle.downgrade();
+
+    // While a strong handle is alive, the weak handle upgrades.
+    assert!(weak.upgrade().is_some(), "upgrades while the actor is alive");
+
+    // Dropping the last strong handle closes the mailbox; the actor dies and the
+    // identity's strong count hits zero, so the weak handle no longer upgrades.
+    let state = handle.state().clone();
+    drop(handle);
+    state.wait_for_terminal().await;
+
+    assert!(
+        weak.upgrade().is_none(),
+        "no strong handle survives a dead actor"
+    );
 }
 
 // -- Event source: a driver coordinating with handlers via shared state --------
@@ -951,18 +1304,15 @@ async fn lifecycle_hooks_run_in_order() {
     let state = handle.state().clone();
     drop(handle);
 
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while state.lifecycle() != LifecycleState::Dead {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "actor must die after the last handle is dropped"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    state.wait_for_terminal().await;
 
     assert_eq!(
         log.snapshot(),
         ["start", "ping", "stop:finished"],
         "on_stop runs on a clean drain with the Finished reason"
+    );
+    assert!(
+        matches!(state.termination_reason(), Some(TerminationReason::Finished)),
+        "a clean drain records the Finished termination reason"
     );
 }

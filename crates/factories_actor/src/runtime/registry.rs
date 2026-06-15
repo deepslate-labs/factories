@@ -540,6 +540,10 @@ mod tests {
         fn blocking_send(self) -> ActorChannelSendResult {
             unimplemented!("the table test actor cannot be messaged")
         }
+
+        fn try_send(self) -> ActorChannelSendResult {
+            unimplemented!("the table test actor cannot be messaged")
+        }
     }
 
     struct TableActorLoop;
@@ -557,6 +561,10 @@ mod tests {
         }
 
         fn shared_state(&self) -> &crate::actor::state::SharedActorState<TableActor> {
+            unimplemented!("the table test actor is never driven")
+        }
+
+        fn self_ref(&self) -> &crate::actor::handle::WeakActorHandle<TableActor> {
             unimplemented!("the table test actor is never driven")
         }
     }

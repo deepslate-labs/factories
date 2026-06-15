@@ -2,6 +2,7 @@ use crate::actor::channel::DynActorChannel;
 use crate::actor::dispatch::ActorMessageDispatcher;
 use crate::actor::rtti::ActorRtti;
 use crate::actor::state::SharedActorState;
+use crate::actor::supervision::{Subscription, ActorId};
 use crate::actor::task::ActorTaskHandle;
 use crate::actor::{Actor, ActorRuntimeBinder};
 use crate::message::rtti::MessageRtti;
@@ -42,6 +43,12 @@ pub(crate) trait AnyActorIdentity: Debug {
 
     /// Retrieve the task handle of the actor task, if one was attached.
     fn task(&self) -> Option<&ActorTaskHandle>;
+
+    /// Register a termination subscription on this (the watched) actor.
+    fn add_subscription(&self, subscription: Subscription);
+
+    /// Remove every subscription registered by the given watcher.
+    fn remove_subscriptions(&self, watcher: ActorId);
 }
 
 impl<A: Actor + ?Sized> AnyActorIdentity for ActorIdentity<A> {
@@ -59,6 +66,14 @@ impl<A: Actor + ?Sized> AnyActorIdentity for ActorIdentity<A> {
 
     fn task(&self) -> Option<&ActorTaskHandle> {
         self.shared.task()
+    }
+
+    fn add_subscription(&self, subscription: Subscription) {
+        self.shared.add_subscription(subscription);
+    }
+
+    fn remove_subscriptions(&self, watcher: ActorId) {
+        self.shared.remove_subscriptions(watcher);
     }
 }
 

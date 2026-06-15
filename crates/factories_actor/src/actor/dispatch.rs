@@ -172,6 +172,7 @@ macro_rules! declare_static_dispatcher {
                     $crate::actor::MessageHandlerContext::<$message, $actor, Mode>::new_unchecked(
                         guard,
                         $crate::actor::ActorRunLoopDispatchContext::shared_state(dispatch_context),
+                        $crate::actor::ActorRunLoopDispatchContext::self_ref(dispatch_context),
                         envelope,
                     )
                 };

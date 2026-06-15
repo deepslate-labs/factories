@@ -61,12 +61,21 @@ pub trait ActorChannelSendable<'a> {
 
     /// Send the prepared sendable blocking.
     fn blocking_send(self) -> ActorChannelSendResult;
+
+    /// Send the prepared sendable without blocking or awaiting.
+    ///
+    /// Enqueues if there is room and fails immediately otherwise (e.g.
+    /// [`MailboxFull`](ActorChannelSendError::MailboxFull) /
+    /// [`ActorDead`](ActorChannelSendError::ActorDead)).
+    fn try_send(self) -> ActorChannelSendResult;
 }
 
 pub trait DynActorChannelSendable<'a> {
     fn send(self: Box<Self>) -> PinnedActorChannelSendFuture<'a>;
 
     fn blocking_send(self: Box<Self>) -> ActorChannelSendResult;
+
+    fn try_send(self: Box<Self>) -> ActorChannelSendResult;
 }
 
 impl<'a, T> DynActorChannelSendable<'a> for T
@@ -80,6 +89,10 @@ where
 
     fn blocking_send(self: Box<Self>) -> ActorChannelSendResult {
         T::blocking_send(*self)
+    }
+
+    fn try_send(self: Box<Self>) -> ActorChannelSendResult {
+        T::try_send(*self)
     }
 }
 
