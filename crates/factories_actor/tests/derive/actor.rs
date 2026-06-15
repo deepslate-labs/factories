@@ -11,7 +11,7 @@ use factories_actor::actor::{
 use factories_actor::declare_static_dispatcher;
 use factories_actor::message::Message;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
-use factories_actor::runtime::kanal::SimpleKanalActorChannel;
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
@@ -63,7 +63,7 @@ pub struct CustomError;
 
 #[derive(Actor)]
 #[actor(
-    channel = SimpleKanalActorChannel,
+    channel = TokioMpscActorChannel,
     error = CustomError,
     binder = StaticOnlyBinder,
     lock = UnguardedLock<Self>,
@@ -111,7 +111,7 @@ struct Partially;
 
 #[test]
 fn defaults_are_the_documented_components() {
-    assert_type_eq::<<Defaulted as Actor>::Channel, SimpleKanalActorChannel>();
+    assert_type_eq::<<Defaulted as Actor>::Channel, TokioMpscActorChannel>();
     assert_type_eq::<<Defaulted as Actor>::Error, core::convert::Infallible>();
     assert_type_eq::<<Defaulted as Actor>::RuntimeBinder, RegistryBinder<Defaulted>>();
     assert_type_eq::<<Defaulted as Actor>::LockStrategy, TokioMutexLock<Defaulted>>();
@@ -129,7 +129,7 @@ fn overrides_replace_components() {
 #[test]
 fn partial_overrides_merge_with_defaults() {
     assert_type_eq::<<Partially as Actor>::Error, CustomError>();
-    assert_type_eq::<<Partially as Actor>::Channel, SimpleKanalActorChannel>();
+    assert_type_eq::<<Partially as Actor>::Channel, TokioMpscActorChannel>();
     assert_type_eq::<<Partially as Actor>::RuntimeBinder, RegistryBinder<Partially>>();
 }
 

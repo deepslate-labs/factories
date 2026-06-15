@@ -23,7 +23,7 @@ use crate::actor::Actor;
 /// struct SequentialSet;
 ///
 /// impl ActorTemplate for SequentialSet {
-///     type Channel = SimpleKanalActorChannel;
+///     type Channel = TokioMpscActorChannel;
 ///     type Error = core::convert::Infallible;
 ///     type RuntimeBinder<A: Actor> = RegistryBinder<A>;
 ///     type LockStrategy<A: Actor> = UnguardedLock<A>;

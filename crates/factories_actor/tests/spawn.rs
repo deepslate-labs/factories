@@ -1,5 +1,4 @@
 #![cfg(all(
-    feature = "kanal-runtime",
     feature = "tokio-runtime",
     feature = "tokio-answer"
 ))]
@@ -20,7 +19,7 @@ use factories_actor::actor::{
     MessageHandlerContext, StaticOnlyBinder,
 };
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
-use factories_actor::runtime::kanal::SimpleKanalActorChannel;
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
@@ -76,7 +75,7 @@ declare_actor_rtti!(GREETER_RTTI, Greeter);
 unsafe impl Actor for Greeter {
     const RTTI: &'static ActorRtti = GREETER_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = InitError;
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = GreeterLock;
@@ -319,7 +318,7 @@ async fn non_send_message_rejected_at_channel() {
         .await
         .expect("init");
 
-    // The kanal channel crosses threads, so the `!Send` message must be
+    // The tokio mpsc channel crosses threads, so the `!Send` message must be
     // rejected at the channel boundary at runtime.
     let result = handle
         .tell(NotSendableMsg {
@@ -439,7 +438,7 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
 
     // Step 1: channel from options
     let (channel, mailbox) =
-        <SimpleKanalActorChannel as CreatableChannel>::create(Default::default());
+        <TokioMpscActorChannel as CreatableChannel>::create(Default::default());
 
     // Step 2: shared state
     let shared = SharedActorState::<Greeter>::new();
@@ -524,7 +523,7 @@ mod custom_loop_scenario {
     unsafe impl Actor for Counter {
         const RTTI: &'static ActorRtti = COUNTER_RTTI;
 
-        type Channel = SimpleKanalActorChannel;
+        type Channel = TokioMpscActorChannel;
         type Error = core::convert::Infallible;
         type RuntimeBinder = StaticOnlyBinder;
         type LockStrategy = CounterLock;
@@ -614,7 +613,7 @@ mod custom_loop_scenario {
         let spawner = TokioTaskSpawner::current();
 
         let (channel, mailbox) =
-            <SimpleKanalActorChannel as CreatableChannel>::create(Default::default());
+            <TokioMpscActorChannel as CreatableChannel>::create(Default::default());
         let shared = SharedActorState::<Counter>::new();
 
         // Assemble the handle before the loop, so the loop's dispatch context can
@@ -664,7 +663,7 @@ declare_actor_rtti!(SUPERVISOR_RTTI, Supervisor);
 unsafe impl Actor for Supervisor {
     const RTTI: &'static ActorRtti = SUPERVISOR_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = UnguardedLock<Supervisor>;
@@ -755,7 +754,7 @@ declare_actor_rtti!(FRAGILE_RTTI, Fragile);
 unsafe impl Actor for Fragile {
     const RTTI: &'static ActorRtti = FRAGILE_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = Kaboom;
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = UnguardedLock<Fragile>;
@@ -939,7 +938,7 @@ declare_actor_rtti!(TALLY_RTTI, Tally);
 unsafe impl Actor for Tally {
     const RTTI: &'static ActorRtti = TALLY_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = UnguardedLock<Tally>;
@@ -1084,7 +1083,7 @@ declare_actor_rtti!(TICKER_RTTI, Ticker);
 unsafe impl Actor for Ticker {
     const RTTI: &'static ActorRtti = TICKER_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = UnguardedLock<Ticker>;
@@ -1228,7 +1227,7 @@ declare_actor_rtti!(HOOKED_RTTI, Hooked);
 unsafe impl Actor for Hooked {
     const RTTI: &'static ActorRtti = HOOKED_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = StaticOnlyBinder;
     type LockStrategy = UnguardedLock<Hooked>;

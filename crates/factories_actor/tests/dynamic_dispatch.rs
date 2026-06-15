@@ -1,6 +1,5 @@
 #![cfg(all(
     feature = "dynamic-dispatch",
-    feature = "kanal-runtime",
     feature = "tokio-runtime",
     feature = "tokio-lock",
     feature = "tokio-answer"
@@ -17,7 +16,7 @@ use factories_actor::message::channel::answer_channel;
 use factories_actor::message::envelope::MessageEnvelope;
 use factories_actor::register_dynamic_handler;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
-use factories_actor::runtime::kanal::SimpleKanalActorChannel;
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::{Exclusive, Shared};
 use factories_actor::runtime::registry::{RegistryBinder, dispatch_registry};
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioRwLock, TokioTaskSpawner};
@@ -38,7 +37,7 @@ declare_actor_rtti!(CALC_RTTI, Calc);
 unsafe impl Actor for Calc {
     const RTTI: &'static ActorRtti = CALC_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = RegistryBinder<Calc>;
     type LockStrategy = TokioMutexLock<Calc>;
@@ -61,7 +60,7 @@ declare_actor_rtti!(MIRROR_RTTI, Mirror);
 unsafe impl Actor for Mirror {
     const RTTI: &'static ActorRtti = MIRROR_RTTI;
 
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder = RegistryBinder<Mirror>;
     type LockStrategy = TokioRwLock<Mirror>;

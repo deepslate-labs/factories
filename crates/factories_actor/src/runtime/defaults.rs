@@ -18,11 +18,12 @@
 //!   component explicitly.
 
 /// Default channel:
-/// [`SimpleKanalActorChannel`](crate::runtime::kanal::SimpleKanalActorChannel).
+/// [`TokioMpscActorChannel`](crate::runtime::tokio::TokioMpscActorChannel), a
+/// cancellation-safe `tokio::sync::mpsc` mailbox.
 ///
-/// Requires the `kanal-runtime` feature.
-#[cfg(feature = "kanal-runtime")]
-pub type DefaultChannel = crate::runtime::kanal::SimpleKanalActorChannel;
+/// Requires the `tokio-runtime` feature.
+#[cfg(feature = "tokio-runtime")]
+pub type DefaultChannel = crate::runtime::tokio::TokioMpscActorChannel;
 
 /// Default actor error type: actors that don't configure one cannot fail.
 pub type DefaultError = core::convert::Infallible;

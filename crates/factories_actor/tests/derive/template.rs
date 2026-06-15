@@ -2,7 +2,7 @@
 //! individual members.
 
 use factories_actor::actor::{Actor, StaticOnlyBinder};
-use factories_actor::runtime::kanal::SimpleKanalActorChannel;
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::UnguardedLock;
 use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
@@ -16,7 +16,7 @@ use crate::util::assert_type_eq;
 struct SequentialSet;
 
 impl ActorTemplate for SequentialSet {
-    type Channel = SimpleKanalActorChannel;
+    type Channel = TokioMpscActorChannel;
     type Error = core::convert::Infallible;
     type RuntimeBinder<A: Actor> = StaticOnlyBinder;
     type LockStrategy<A: Actor> = UnguardedLock<A>;
@@ -47,7 +47,7 @@ struct TemplatedOverride;
 
 #[test]
 fn template_supplies_components() {
-    assert_type_eq::<<Templated as Actor>::Channel, SimpleKanalActorChannel>();
+    assert_type_eq::<<Templated as Actor>::Channel, TokioMpscActorChannel>();
     assert_type_eq::<<Templated as Actor>::Error, core::convert::Infallible>();
     assert_type_eq::<<Templated as Actor>::RuntimeBinder, StaticOnlyBinder>();
     assert_type_eq::<<Templated as Actor>::LockStrategy, UnguardedLock<Templated>>();

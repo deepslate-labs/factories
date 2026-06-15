@@ -9,3 +9,11 @@ pub use lock::{TokioMutexLock, TokioRwLock};
 mod spawner;
 #[cfg(feature = "tokio-runtime")]
 pub use spawner::TokioTaskSpawner;
+
+#[cfg(feature = "tokio-runtime")]
+mod channel;
+#[cfg(feature = "tokio-runtime")]
+pub use channel::{
+    TokioMpscActorChannel, TokioMpscActorMailbox, TokioMpscChannelCapacity,
+    TokioMpscChannelOptions, TokioMpscChannelSendable,
+};

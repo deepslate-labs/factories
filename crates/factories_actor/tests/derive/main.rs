@@ -1,7 +1,6 @@
 #![cfg(all(
     feature = "derive",
     feature = "dynamic-dispatch",
-    feature = "kanal-runtime",
     feature = "tokio-runtime",
     feature = "tokio-lock",
     feature = "tokio-answer"

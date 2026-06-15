@@ -1,8 +1,5 @@
 //! Concrete implementations: channels, run loops and task spawners.
 
-#[cfg(feature = "kanal-runtime")]
-pub mod kanal;
-
 #[cfg(any(feature = "tokio-runtime", feature = "tokio-lock"))]
 pub mod tokio;
 
@@ -15,7 +12,6 @@ pub mod init;
 pub mod lock;
 pub mod loop_support;
 pub mod result;
-pub mod routing;
 pub mod sequential_loop;
 pub mod template;
 
