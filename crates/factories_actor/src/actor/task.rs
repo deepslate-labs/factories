@@ -116,8 +116,6 @@ impl ActorTaskHandle {
 
 impl Drop for ActorTaskHandle {
     fn drop(&mut self) {
-        self.abort();
-
         // SAFETY: At creation time the caller has ensured that drop takes handle
         unsafe { (self.drop)(self.handle) };
     }
