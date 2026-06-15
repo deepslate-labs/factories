@@ -220,6 +220,9 @@ impl MessageEnvelope {
     }
 
     /// Unwrap this envelope and reveal its parts.
+    ///
+    /// # Safety
+    /// The caller must ensure that the envelope contains a message of type T.
     pub unsafe fn unwrap_unchecked<T: Message>(mut self) -> (T, Option<AnswerSender<T>>) {
         debug_assert_eq!(
             T::RTTI,
@@ -230,7 +233,7 @@ impl MessageEnvelope {
         match self.ty() {
             EnvelopeType::Tell => {
                 // SAFETY: We checked that we are of the tell type
-                let tell = unsafe { &mut *(&mut self.payload.tell) };
+                let tell = unsafe { &mut self.payload.tell };
 
                 // SAFETY: The caller has ensured that the payload is of type T
                 let message = unsafe { Self::unpack_or_unbox(&tell.data) };
@@ -241,7 +244,7 @@ impl MessageEnvelope {
             }
             EnvelopeType::Ask => {
                 // SAFETY: We checked that we are of the ask type
-                let ask = unsafe { &mut *(&mut self.payload.ask) };
+                let ask = unsafe { &mut self.payload.ask };
 
                 // SAFETY: The caller has ensured that the payload is of type T
                 let (message, answer_sender) = unsafe {
@@ -464,7 +467,7 @@ impl Drop for MessageEnvelope {
             EnvelopeType::Ask => {
                 // SAFETY: We checked that this is an "ask" message
                 //         and thus the ask field is valid.
-                let ask = unsafe { &mut *(&mut self.payload.ask) };
+                let ask = unsafe { &mut self.payload.ask };
 
                 // SAFETY: The data areas contain valid boxed or direct instances and are valid
                 unsafe {

@@ -140,10 +140,6 @@ impl PartialEq for MessageRtti {
     fn eq(&self, other: &Self) -> bool {
         PartialEq::eq(&self.identity(), &other.identity())
     }
-
-    fn ne(&self, other: &Self) -> bool {
-        PartialEq::ne(&self.identity(), &other.identity())
-    }
 }
 
 impl Eq for MessageRtti {}

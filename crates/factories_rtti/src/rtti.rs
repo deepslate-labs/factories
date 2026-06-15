@@ -67,7 +67,7 @@ impl BasicTypeRtti {
 
     /// Drop a pointer of the type that was created using `Box::<T>::into_raw()`.
     ///
-    /// # Safety:
+    /// # Safety
     /// The caller must ensure that ptr points to a valid pointer that was obtained using
     /// `Box::<T>::into_raw`, where `T` is the type this RTTI is associated with.
     pub unsafe fn drop_boxed_ptr(&self, ptr: *mut core::ffi::c_void) {
@@ -79,10 +79,6 @@ impl BasicTypeRtti {
 impl PartialEq for BasicTypeRtti {
     fn eq(&self, other: &Self) -> bool {
         PartialEq::eq(&self.type_id, &other.type_id)
-    }
-
-    fn ne(&self, other: &Self) -> bool {
-        PartialEq::ne(&self.type_id, &other.type_id)
     }
 }
 

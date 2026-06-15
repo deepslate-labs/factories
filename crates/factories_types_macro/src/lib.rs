@@ -4,7 +4,7 @@ mod sequential_trait;
 #[proc_macro_error::proc_macro_error]
 #[proc_macro]
 pub fn match_specialize(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    specialize::proc_macro_specialize(input.into()).into()
+    specialize::proc_macro_specialize(input)
 }
 
 #[proc_macro_error::proc_macro_error]

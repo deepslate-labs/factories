@@ -67,6 +67,7 @@ enum DieMode {
 ///
 /// Markers re-route dispatch machinery into the parameter; the macro never
 /// inspects the parameter's *type* - the generated method call checks it.
+#[allow(clippy::large_enum_variant)]
 enum ParamBinding {
     /// Plain parameter: a message field (generated message) or the name of a
     /// field to decompose out of an existing message.
@@ -272,7 +273,12 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
         );
     }
     for (function, die_on_err) in &on_starts {
-        generated.extend(expand_lifecycle_hook(self_ty, function, Hook::Start, *die_on_err));
+        generated.extend(expand_lifecycle_hook(
+            self_ty,
+            function,
+            Hook::Start,
+            *die_on_err,
+        ));
     }
     if let Some((extra, _)) = on_stops.get(1) {
         proc_macro_error::emit_error!(
@@ -281,7 +287,12 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
         );
     }
     for (function, die_on_err) in &on_stops {
-        generated.extend(expand_lifecycle_hook(self_ty, function, Hook::Stop, *die_on_err));
+        generated.extend(expand_lifecycle_hook(
+            self_ty,
+            function,
+            Hook::Stop,
+            *die_on_err,
+        ));
     }
 
     // The typed-handle methods forward to the generated messages. They live on
@@ -358,10 +369,7 @@ fn expand_lifecycle_hook(
     let signature = &function.sig;
 
     let Some(receiver) = signature.receiver() else {
-        proc_macro_error::emit_error!(
-            signature.ident.span(),
-            "lifecycle hooks must take `self`"
-        );
+        proc_macro_error::emit_error!(signature.ident.span(), "lifecycle hooks must take `self`");
         return TokenStream::new();
     };
 
@@ -737,15 +745,15 @@ fn expand_handler(
         }
     }
 
-    if let Some(span) = message_param {
-        if !fields.is_empty() {
-            proc_macro_error::emit_error!(
-                span,
-                "#[message] receives the whole message, it cannot be combined with \
+    if let Some(span) = message_param
+        && !fields.is_empty()
+    {
+        proc_macro_error::emit_error!(
+            span,
+            "#[message] receives the whole message, it cannot be combined with \
                  decomposed field parameters"
-            );
-            return None;
-        }
+        );
+        return None;
     }
 
     if manual_answer && !matches!(signature.output, ReturnType::Default) {

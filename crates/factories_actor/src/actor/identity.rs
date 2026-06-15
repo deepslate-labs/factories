@@ -53,7 +53,7 @@ pub(crate) trait AnyActorIdentity: Debug {
 
 impl<A: Actor + ?Sized> AnyActorIdentity for ActorIdentity<A> {
     fn rtti(&self) -> &'static ActorRtti {
-        &self.rtti
+        self.rtti
     }
 
     fn bind(&self, message: &MessageRtti) -> Option<ActorMessageDispatcher> {

@@ -192,10 +192,8 @@ where
 {
     type ExclusiveGuard<'a> = UnguardedGuard<'a, A>;
 
-    fn acquire_exclusive(&self) -> impl Future<Output = Self::ExclusiveGuard<'_>> {
-        // Lazy so acquisition happens when the dispatch polls, not when the
-        // future is built.
-        async move { self.acquire() }
+    async fn acquire_exclusive(&self) -> Self::ExclusiveGuard<'_> {
+        self.acquire()
     }
 }
 
@@ -207,8 +205,8 @@ where
     // exclusive guard serves double duty.
     type SharedGuard<'a> = UnguardedGuard<'a, A>;
 
-    fn acquire_shared(&self) -> impl Future<Output = Self::SharedGuard<'_>> {
-        async move { self.acquire() }
+    async fn acquire_shared(&self) -> Self::SharedGuard<'_> {
+        self.acquire()
     }
 }
 

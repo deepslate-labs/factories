@@ -83,6 +83,12 @@ impl<T> GlobalCollection<T> {
     }
 }
 
+impl<T> Default for GlobalCollection<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a, T> IntoIterator for &'a GlobalCollection<T> {
     type Item = &'a T;
     type IntoIter = GlobalCollectionIter<'a, T>;

@@ -11,6 +11,10 @@ pub mod rtti;
 pub use factories_actor_macro::Message;
 
 /// Declares a struct as being an actor message type.
+///
+/// # Safety
+/// The message implementation must ensure that the RTTI associated const is of
+/// the message Self type.
 pub unsafe trait Message
 where
     Self: Sized + 'static,

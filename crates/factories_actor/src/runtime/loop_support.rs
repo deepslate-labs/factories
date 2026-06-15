@@ -63,11 +63,11 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
     /// mailbox-polling decision - and produce the [`StandardWork`] that acquires
     /// the lock and runs the handler, ready to drive. `None` means the driver
     /// stopped the loop.
-    pub fn next_dispatch<'ctx, 'turn, D, M>(
+    pub async fn next_dispatch<'ctx, 'turn, D, M>(
         &'ctx self,
         driver: &'turn mut D,
         mailbox: &'turn mut M,
-    ) -> impl Future<Output = Option<StandardWork<'ctx>>> + use<'ctx, 'turn, A, D, M>
+    ) -> Option<StandardWork<'ctx>>
     where
         // The work borrows the context (`'ctx`); the driver/mailbox borrow
         // (`'turn`) is released when this future completes - so a concurrent loop
@@ -77,23 +77,23 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         A::RunLoop: ActorRunLoop<A, DispatchContext = Self>,
         <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
     {
-        async move {
-            let cx = EventContext::new(&self.lock_strategy, &self.shared);
+        let cx = EventContext::new(&self.lock_strategy, &self.shared);
 
-            // `Send`-readable by the `EventDriver::next` bound - no reclaim.
-            let message = driver.next(cx, mailbox).await?;
+        // `Send`-readable by the `EventDriver::next` bound - no reclaim.
+        let message = driver.next(cx, mailbox).await?;
 
-            // SAFETY: the message was produced by our own driver while we are in
-            //         the actor loop, so it can be dispatched onto our loop, and
-            //         `self` is exactly this loop's `DispatchContext`.
-            let erased = unsafe { message.dispatch_onto_loop::<A>(self) };
+        // SAFETY: the message was produced by our own driver while we are in
+        //         the actor loop, so it can be dispatched onto our loop, and
+        //         `self` is exactly this loop's `DispatchContext`.
+        let erased = unsafe { message.dispatch_onto_loop::<A>(self) };
 
-            // Unpacked to the converter's `Erased`; the standard loops drive it as
-            // a `Send` future. The opaque cell is gone by here.
-            Some(<<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+        // Unpacked to the converter's `Erased`; the standard loops drive it as
+        // a `Send` future. The opaque cell is gone by here.
+        Some(
+            <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
                 erased,
-            ))
-        }
+            ),
+        )
     }
 
     /// Run the actor's stop hook and consume the context.
@@ -205,13 +205,12 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
 /// off to the loop's [`StandardLoop::run`]. A [`StandardLoop`]'s
 /// [`SpawnableRunLoop`](crate::spawn::SpawnableRunLoop) `run_with` is a one-line
 /// delegation to this.
-pub fn standard_run_with<A, L, I, M>(
+pub async fn standard_run_with<A, L, I, M>(
     init: I,
     shared: SharedActorState<A>,
     mailbox: M,
     self_ref: WeakActorHandle<A>,
-) -> impl Future<Output = ()> + Send + 'static
-where
+) where
     A: Actor<RunLoop = L> + Into<A::LockStrategy> + Send,
     L: StandardLoop<A>,
     I: ActorInit<A> + Send + 'static,
@@ -223,53 +222,50 @@ where
     M: Send + 'static,
     <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
 {
-    async move {
-        // Loop exit, handler panic and task abort all transition to `Dead`.
-        let _guard = shared.dead_on_drop();
+    // Loop exit, handler panic and task abort all transition to `Dead`.
+    let _guard = shared.dead_on_drop();
 
-        // The actor is held across the start-hook await (its work borrows it), so
-        // the task future needs `A: Send` - already implied by `A::LockStrategy:
-        // Send` for the real locks, made explicit above. After the hook it moves
-        // into its lock before the loop's first await; the driver it yields is the
-        // named `A::EventDriver`, `Send` by the bound above.
-        let lock_strategy;
-        let driver;
+    // The actor is held across the start-hook await (its work borrows it), so
+    // the task future needs `A: Send` - already implied by `A::LockStrategy:
+    // Send` for the real locks, made explicit above. After the hook it moves
+    // into its lock before the loop's first await; the driver it yields is the
+    // named `A::EventDriver`, `Send` by the bound above.
+    let lock_strategy;
+    let driver;
+    {
+        let Some(mut actor) = init_or_fail(init, &shared).await else {
+            return;
+        };
+
+        // Drive the start hook before announcing `Running`: the actor is not
+        // yet behind its lock (plain `&mut`), and a waiter on `spawn_ready`
+        // only observes `Running` once startup has completed.
         {
-            let Some(mut actor) = init_or_fail(init, &shared).await else {
-                return;
-            };
-
-            // Drive the start hook before announcing `Running`: the actor is not
-            // yet behind its lock (plain `&mut`), and a waiter on `spawn_ready`
-            // only observes `Running` once startup has completed.
-            {
-                let cx = ActorContext::new(&shared, &self_ref);
-                let start = into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(
-                    actor.on_start(cx),
-                );
-                <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
-                    start,
-                )
-                .await;
-            }
-
-            // A failing start hook aborts startup before the loop runs - and the
-            // stop hook does not run, since the actor never reached `Running`.
-            if shared.failed_error().is_some() {
-                return;
-            }
-            shared.transition_running();
-
-            // Build the driver from the actor (seedable via its `From<&Actor>`
-            // impl), before the actor moves into its lock.
-            driver = A::EventDriver::from(&actor);
-            lock_strategy = actor.into();
+            let cx = ActorContext::new(&shared, &self_ref);
+            let start =
+                into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(actor.on_start(cx));
+            <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+                start,
+            )
+            .await;
         }
 
-        L::build(lock_strategy, shared, self_ref)
-            .run(mailbox, driver)
-            .await;
+        // A failing start hook aborts startup before the loop runs - and the
+        // stop hook does not run, since the actor never reached `Running`.
+        if shared.failed_error().is_some() {
+            return;
+        }
+        shared.transition_running();
+
+        // Build the driver from the actor (seedable via its `From<&Actor>`
+        // impl), before the actor moves into its lock.
+        driver = A::EventDriver::from(&actor);
+        lock_strategy = actor.into();
     }
+
+    L::build(lock_strategy, shared, self_ref)
+        .run(mailbox, driver)
+        .await;
 }
 
 /// Run the actor initializer, returning the constructed actor or recording the

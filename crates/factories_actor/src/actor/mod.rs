@@ -29,6 +29,10 @@ pub mod work;
 pub use factories_actor_macro::Actor;
 
 /// The heart of the actor system. Defines a struct as being an actor.
+///
+/// # Safety
+/// An actor implementation must ensure that the associated RTTI
+/// const is of the actors self type.
 pub unsafe trait Actor: 'static {
     const RTTI: &'static ActorRtti;
 
