@@ -696,21 +696,21 @@ mod test {
     /// Small non-clonable message (for testing clone rejection on non-Clone types).
     #[derive(Debug)]
     struct SmallNonClone {
-        value: u64,
+        _value: u64,
     }
     declare_message!(SmallNonClone, ());
 
     /// Non-Send message (raw pointer makes it !Send).
     #[derive(Debug, Clone)]
     struct NonSendMsg {
-        ptr: *const (),
+        _ptr: *const (),
     }
     declare_message!(NonSendMsg, ());
 
     /// Send message with a non-Send answer type.
     #[derive(Debug, Clone)]
     struct SendMsgNonSendAnswer {
-        value: u64,
+        _value: u64,
     }
     declare_message!(SendMsgNonSendAnswer, *const ());
 
@@ -1225,7 +1225,7 @@ mod test {
 
     #[test]
     fn try_clone_non_clonable_returns_none() {
-        let env = MessageEnvelope::new(SmallNonClone { value: 1 }, None);
+        let env = MessageEnvelope::new(SmallNonClone { _value: 1 }, None);
         assert!(env.try_clone().is_none());
     }
 
@@ -1259,7 +1259,7 @@ mod test {
 
     #[test]
     fn try_clone_as_tell_non_clonable_returns_none() {
-        let env = MessageEnvelope::new(SmallNonClone { value: 1 }, None);
+        let env = MessageEnvelope::new(SmallNonClone { _value: 1 }, None);
         assert!(env.try_clone_as_tell().is_none());
     }
 
@@ -1357,7 +1357,7 @@ mod test {
         fn try_clone_as_tell_from_ask_non_clonable() {
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let env =
-                MessageEnvelope::new(SmallNonClone { value: 1 }, Some(AnswerSender::Tokio(tx)));
+                MessageEnvelope::new(SmallNonClone { _value: 1 }, Some(AnswerSender::Tokio(tx)));
             assert!(env.try_clone_as_tell().is_none());
         }
 
@@ -1395,7 +1395,7 @@ mod test {
         fn ask_send_msg_non_send_answer_is_not_sendable() {
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let env = MessageEnvelope::new(
-                SendMsgNonSendAnswer { value: 1 },
+                SendMsgNonSendAnswer { _value: 1 },
                 Some(AnswerSender::Tokio(tx)),
             );
             assert!(
@@ -1408,7 +1408,7 @@ mod test {
         fn sendable_envelope_rejects_ask_with_non_send_answer() {
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let env = MessageEnvelope::new(
-                SendMsgNonSendAnswer { value: 1 },
+                SendMsgNonSendAnswer { _value: 1 },
                 Some(AnswerSender::Tokio(tx)),
             );
             assert!(SendableEnvelope::try_from_envelope(env).is_err());
@@ -1647,7 +1647,7 @@ mod test {
 
         let env = MessageEnvelope::new(
             NonSendMsg {
-                ptr: core::ptr::null(),
+                _ptr: core::ptr::null(),
             },
             None,
         );
@@ -1665,7 +1665,7 @@ mod test {
     fn sendable_envelope_from_non_send_message() {
         let env = MessageEnvelope::new(
             NonSendMsg {
-                ptr: core::ptr::null(),
+                _ptr: core::ptr::null(),
             },
             None,
         );
@@ -1700,7 +1700,7 @@ mod test {
     fn sendable_envelope_rejected_returns_original() {
         let env = MessageEnvelope::new(
             NonSendMsg {
-                ptr: core::ptr::null(),
+                _ptr: core::ptr::null(),
             },
             None,
         );
@@ -1758,7 +1758,7 @@ mod test {
     fn non_send_msg_is_not_sendable() {
         let env = MessageEnvelope::new(
             NonSendMsg {
-                ptr: core::ptr::null(),
+                _ptr: core::ptr::null(),
             },
             None,
         );
@@ -1769,13 +1769,13 @@ mod test {
     fn tell_send_msg_non_send_answer_is_sendable() {
         // A tell message doesn't carry an answer sender, so only the message's
         // Send-ness matters.
-        let env = MessageEnvelope::new(SendMsgNonSendAnswer { value: 1 }, None);
+        let env = MessageEnvelope::new(SendMsgNonSendAnswer { _value: 1 }, None);
         assert!(env.is_sendable());
     }
 
     #[test]
     fn sendable_envelope_accepts_tell_with_non_send_answer() {
-        let env = MessageEnvelope::new(SendMsgNonSendAnswer { value: 1 }, None);
+        let env = MessageEnvelope::new(SendMsgNonSendAnswer { _value: 1 }, None);
         assert!(SendableEnvelope::try_from_envelope(env).is_ok());
     }
 
