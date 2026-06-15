@@ -1,0 +1,33 @@
+[package]
+name = "factories_benchmarks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+factories_actor = { workspace = true, features = ["full-runtime", "derive"] }
+# tracing OFF to match factories (whose tracing feature is off). kameo defaults
+# to tracing on (per-actor lifecycle span + per-message caller span); keeping it
+# on would measure kameo's instrumentation, not its dispatch.
+kameo = { version = "0.20.0", default-features = false, features = ["macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros"] }
+
+# factories_actor's no_std `once_cell` config expects the final binary to supply
+# a critical-section implementation; the benchmark binaries run on std.
+critical-section = { version = "1", features = ["std"] }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["async_tokio"] }
+futures = { workspace = true, features = ["std", "async-await"] }
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "roundtrip"
+harness = false
+
+[[bench]]
+name = "throughput"
+harness = false

@@ -985,25 +985,19 @@ fn expand_handler(
         }
     };
 
+    // The handler body lives in a named `async fn ctx` producer (not inlined
+    // into a closure-in-a-const), so spans and backtraces point at real code.
+    // `implement_message_handler!` writes the `MessageHandler` impl + dispatcher
+    // const around it; the async assumption lives here, per-handler - never on
+    // `MessageHandler`/`IntoRunLoopWork`.
     let items = quote! {
         #message_decl
 
-        impl ::factories_actor::actor::MessageHandler<#message_ty> for #self_ty {
-            type AccessMode = #access;
+        ::factories_actor::implement_message_handler! {
+            impl MessageHandler<#message_ty> for #self_ty {
+                type AccessMode = #access;
 
-            const DISPATCHER:
-                ::factories_actor::actor::dispatch::StaticDispatcher<#self_ty, #message_ty> =
-                ::factories_actor::declare_static_dispatcher!(#self_ty, #message_ty);
-
-            fn handle<'a>(
-                ctx: ::factories_actor::actor::MessageHandlerContext<'a, #message_ty, Self, #access>,
-            ) -> impl ::factories_actor::actor::work::IntoRunLoopWork<
-                <<Self as ::factories_actor::actor::Actor>::RunLoop
-                    as ::factories_actor::actor::ActorRunLoop<Self>>::WorkConverter,
-            > + 'a {
-                async move {
-                    #body
-                }
+                async fn handle(ctx) { #body }
             }
         }
 
