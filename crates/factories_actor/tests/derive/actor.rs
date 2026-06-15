@@ -6,12 +6,11 @@
 use factories_actor::actor::{Actor, MessageHandlerContext, StaticOnlyBinder};
 use factories_actor::implement_message_handler;
 use factories_actor::message::Message;
-use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioMpscActorChannel;
-use factories_actor::runtime::tokio::{TokioMutexLock, TokioTaskSpawner};
+use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::ActorLauncher;
 
 use crate::util::assert_type_eq;
@@ -98,8 +97,8 @@ fn defaults_are_the_documented_components() {
     assert_type_eq::<<Defaulted as Actor>::Channel, TokioMpscActorChannel>();
     assert_type_eq::<<Defaulted as Actor>::Error, core::convert::Infallible>();
     assert_type_eq::<<Defaulted as Actor>::RuntimeBinder, RegistryBinder<Defaulted>>();
-    assert_type_eq::<<Defaulted as Actor>::LockStrategy, TokioMutexLock<Defaulted>>();
-    assert_type_eq::<<Defaulted as Actor>::RunLoop, ConcurrentRunLoop<Defaulted>>();
+    assert_type_eq::<<Defaulted as Actor>::LockStrategy, UnguardedLock<Defaulted>>();
+    assert_type_eq::<<Defaulted as Actor>::RunLoop, SequentialRunLoop<Defaulted>>();
 }
 
 #[test]

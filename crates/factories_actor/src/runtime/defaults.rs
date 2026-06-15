@@ -58,14 +58,29 @@ mod static_only {
 }
 
 /// Default lock strategy:
-/// [`TokioMutexLock`](crate::runtime::tokio::TokioMutexLock), exclusive access
-/// only.
+/// [`UnguardedLock`](crate::runtime::lock::UnguardedLock) - no synchronization,
+/// relying on the serialized [`DefaultRunLoop`] for exclusivity.
 ///
-/// Requires the `tokio-lock` feature.
-#[cfg(feature = "tokio-lock")]
-pub type DefaultLockStrategy<A> = crate::runtime::tokio::TokioMutexLock<A>;
+/// This pairs with the default [`SequentialRunLoop`](crate::runtime::sequential_loop::SequentialRunLoop):
+/// dispatches never overlap, so the state needs no real lock and both `&self`
+/// (shared) and `&mut self` (exclusive) handlers work with zero overhead.
+/// Dependency-free (`core` atomics only).
+///
+/// Overriding [`DefaultRunLoop`] to a concurrent loop while leaving this default
+/// is a compile error - `UnguardedLock`'s access modes require
+/// [`SerializedDispatch`](crate::actor::SerializedDispatch) - so opting into
+/// concurrency forces choosing a real lock (e.g.
+/// [`TokioRwLock`](crate::runtime::tokio::TokioRwLock)).
+pub type DefaultLockStrategy<A> = crate::runtime::lock::UnguardedLock<A>;
 
 /// Default run loop:
-/// [`ConcurrentRunLoop`](crate::runtime::concurrent_loop::ConcurrentRunLoop)
-/// (dependency-free, always available).
-pub type DefaultRunLoop<A> = crate::runtime::concurrent_loop::ConcurrentRunLoop<A>;
+/// [`SequentialRunLoop`](crate::runtime::sequential_loop::SequentialRunLoop) -
+/// one message handled to completion before the next is pulled (dependency-free,
+/// always available).
+///
+/// This is the least-surprising actor model: messages are processed in order,
+/// one at a time. A handler that `.await`s blocks the actor until it resolves
+/// (head-of-line blocking); for actors that need overlapping dispatch, opt into
+/// [`ConcurrentRunLoop`](crate::runtime::concurrent_loop::ConcurrentRunLoop) with
+/// a real lock.
+pub type DefaultRunLoop<A> = crate::runtime::sequential_loop::SequentialRunLoop<A>;
