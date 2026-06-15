@@ -3,18 +3,14 @@
 //!
 //! `Defaulted` and `Customized` double as fixtures for the other modules.
 
-use factories_actor::actor::dispatch::StaticDispatcher;
-use factories_actor::actor::work::IntoRunLoopWork;
-use factories_actor::actor::{
-    Actor, ActorRunLoop, MessageHandler, MessageHandlerContext, StaticOnlyBinder,
-};
-use factories_actor::declare_static_dispatcher;
+use factories_actor::actor::{Actor, MessageHandlerContext, StaticOnlyBinder};
+use factories_actor::implement_message_handler;
 use factories_actor::message::Message;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
-use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::registry::RegistryBinder;
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioTaskSpawner};
 use factories_actor::spawn::ActorLauncher;
 
@@ -33,24 +29,15 @@ pub struct Defaulted {
 #[message(answer = u32)]
 pub struct Get;
 
-/// A hand-written handler on a derived actor: the derive must interoperate
-/// with the manual path.
-impl MessageHandler<Get> for Defaulted {
-    type AccessMode = lock::Exclusive;
-
-    const DISPATCHER: StaticDispatcher<Defaulted, Get> = declare_static_dispatcher!(Defaulted, Get);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Get, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
-            let (guard, _, answer) = ctx.into_parts();
-            if let Some(answer) = answer {
-                let _ = answer.send(guard.value);
-            }
-        }
+// A hand-written handler on a derived actor: the derive must interoperate
+// with the manual path. This one uses the terse `implement_message_handler!`
+// form with an inline closure producer.
+implement_message_handler!(Defaulted, Get, lock::Exclusive, |ctx| async move {
+    let (guard, _, answer) = ctx.into_parts();
+    if let Some(answer) = answer {
+        let _ = answer.send(guard.value);
     }
-}
+});
 
 // ---------------------------------------------------------------------------
 // Customized: every component overridden, including `Self`-referential types
@@ -78,16 +65,13 @@ pub struct Customized {
 #[message(answer = u32, name = "hit")]
 pub struct Hit;
 
-impl MessageHandler<Hit> for Customized {
-    type AccessMode = lock::Exclusive;
+// The trait-impl `implement_message_handler!` form, with the context parameter
+// annotated explicitly (the macro also accepts it bare).
+implement_message_handler! {
+    impl MessageHandler<Hit> for Customized {
+        type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Customized, Hit> =
-        declare_static_dispatcher!(Customized, Hit);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Hit, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        async fn handle(ctx: MessageHandlerContext<'_, Hit, Customized, lock::Exclusive>) {
             let (mut guard, _, answer) = ctx.into_parts();
             guard.hits += 1;
             if let Some(answer) = answer {

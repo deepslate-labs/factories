@@ -16,7 +16,7 @@ use factories_actor::actor::lifecycle::{StopReason, TerminationKind, Termination
 use factories_actor::actor::supervision::Terminated;
 use factories_actor::actor::{
     AccessMode, Actor, ActorContext, ActorInit, ActorRunLoop, LockStrategy, MessageHandler,
-    MessageHandlerContext, StaticOnlyBinder,
+    StaticOnlyBinder,
 };
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
 use factories_actor::runtime::tokio::TokioMpscActorChannel;
@@ -26,7 +26,7 @@ use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::{
     ActorLauncher, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
 };
-use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
+use factories_actor::{declare_actor_rtti, declare_message, declare_static_async_dispatcher};
 // ---------------------------------------------------------------------------
 // Test actor: Greeter - written fully by hand. This is the manual path the
 // future macro layer will generate; if writing this gets painful, the
@@ -115,20 +115,14 @@ declare_message!(Greet, String);
 impl MessageHandler<Greet> for Greeter {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Greeter, Greet> = declare_static_dispatcher!(Greeter, Greet);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Greet, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Greeter, Greet> = declare_static_async_dispatcher!(Greeter, Greet, |ctx| async move {
             let (guard, message, answer) = ctx.into_parts();
 
             let reply = format!("{} {}", guard.greeting, message.name);
             if let Some(answer) = answer {
                 let _ = answer.send(reply);
             }
-        }
-    }
+        });
 }
 
 #[derive(Debug)]
@@ -141,16 +135,10 @@ impl MessageHandler<SetGreeting> for Greeter {
     type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Greeter, SetGreeting> =
-        declare_static_dispatcher!(Greeter, SetGreeting);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, SetGreeting, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Greeter, SetGreeting, |ctx| async move {
             let (mut guard, message, _) = ctx.into_parts();
             guard.greeting = message.greeting;
-        }
-    }
+        });
 }
 
 /// A message that cannot cross threads (raw pointer makes it `!Send`).
@@ -164,15 +152,9 @@ impl MessageHandler<NotSendableMsg> for Greeter {
     type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Greeter, NotSendableMsg> =
-        declare_static_dispatcher!(Greeter, NotSendableMsg);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, NotSendableMsg, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Greeter, NotSendableMsg, |ctx| async move {
             drop(ctx);
-        }
-    }
+        });
 }
 
 // -- Builder path ---------------------------------------------------------------
@@ -541,20 +523,13 @@ mod custom_loop_scenario {
         type AccessMode = CounterExclusive;
 
         const DISPATCHER: StaticDispatcher<Counter, Increment> =
-            declare_static_dispatcher!(Counter, Increment);
-
-        fn handle<'a>(
-            ctx: MessageHandlerContext<'a, Increment, Self, CounterExclusive>,
-        ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a
-        {
-            async move {
+            declare_static_async_dispatcher!(Counter, Increment, |ctx| async move {
                 let (mut guard, _message, answer) = ctx.into_parts();
                 guard.count += 1;
                 if let Some(answer) = answer {
                     let _ = answer.send(guard.count);
                 }
-            }
-        }
+            });
     }
 
     /// A custom run loop: strictly sequential, no work set, no assembly contract.
@@ -677,17 +652,11 @@ impl MessageHandler<Terminated> for Supervisor {
     type AccessMode = lock::Exclusive;
 
     const DISPATCHER: StaticDispatcher<Supervisor, Terminated> =
-        declare_static_dispatcher!(Supervisor, Terminated);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Terminated, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Supervisor, Terminated, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, message, _) = ctx.into_parts();
             actor_cx.extension().record(message.tag(), message.kind());
-        }
-    }
+        });
 }
 
 #[derive(Debug)]
@@ -698,19 +667,13 @@ impl MessageHandler<GetDeaths> for Supervisor {
     type AccessMode = lock::Exclusive;
 
     const DISPATCHER: StaticDispatcher<Supervisor, GetDeaths> =
-        declare_static_dispatcher!(Supervisor, GetDeaths);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, GetDeaths, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Supervisor, GetDeaths, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
             if let Some(answer) = answer {
                 let _ = answer.send(actor_cx.extension().snapshot());
             }
-        }
-    }
+        });
 }
 
 #[tokio::test]
@@ -772,20 +735,14 @@ impl MessageHandler<Detonate> for Fragile {
     type AccessMode = lock::Exclusive;
 
     const DISPATCHER: StaticDispatcher<Fragile, Detonate> =
-        declare_static_dispatcher!(Fragile, Detonate);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Detonate, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Fragile, Detonate, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
             actor_cx.fail(Kaboom);
             if let Some(answer) = answer {
                 let _ = answer.send(());
             }
-        }
-    }
+        });
 }
 
 #[tokio::test]
@@ -848,12 +805,7 @@ impl MessageHandler<WatchIt> for Supervisor {
     type AccessMode = lock::Exclusive;
 
     const DISPATCHER: StaticDispatcher<Supervisor, WatchIt> =
-        declare_static_dispatcher!(Supervisor, WatchIt);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, WatchIt, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Supervisor, WatchIt, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, message, answer) = ctx.into_parts();
             // Watch from inside a handler via the actor's own context - no handle
@@ -863,8 +815,7 @@ impl MessageHandler<WatchIt> for Supervisor {
             if let Some(answer) = answer {
                 let _ = answer.send(());
             }
-        }
-    }
+        });
 }
 
 #[tokio::test]
@@ -955,19 +906,13 @@ declare_message!(Bump, u32);
 impl MessageHandler<Bump> for Tally {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Tally, Bump> = declare_static_dispatcher!(Tally, Bump);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Bump, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Tally, Bump> = declare_static_async_dispatcher!(Tally, Bump, |ctx| async move {
             let (mut guard, message, answer) = ctx.into_parts();
             guard.total += message.0;
             if let Some(answer) = answer {
                 let _ = answer.send(guard.total);
             }
-        }
-    }
+        });
 }
 
 #[tokio::test]
@@ -994,12 +939,7 @@ impl MessageHandler<KickSelf> for Tally {
     type AccessMode = lock::Exclusive;
 
     const DISPATCHER: StaticDispatcher<Tally, KickSelf> =
-        declare_static_dispatcher!(Tally, KickSelf);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, KickSelf, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Tally, KickSelf, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
 
@@ -1011,8 +951,7 @@ impl MessageHandler<KickSelf> for Tally {
             if let Some(answer) = answer {
                 let _ = answer.send(());
             }
-        }
-    }
+        });
 }
 
 #[tokio::test]
@@ -1100,12 +1039,7 @@ declare_message!(Tick, ());
 impl MessageHandler<Tick> for Ticker {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Ticker, Tick> = declare_static_dispatcher!(Ticker, Tick);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Tick, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Ticker, Tick> = declare_static_async_dispatcher!(Ticker, Tick, |ctx| async move {
             // Grab the (lock-free) extension before decomposing the context.
             let actor_cx = ctx.actor_context();
             let (mut guard, _message, answer) = ctx.into_parts();
@@ -1117,8 +1051,7 @@ impl MessageHandler<Tick> for Ticker {
             if let Some(answer) = answer {
                 let _ = answer.send(());
             }
-        }
-    }
+        });
 }
 
 #[derive(Debug)]
@@ -1129,18 +1062,12 @@ impl MessageHandler<GetTotal> for Ticker {
     type AccessMode = lock::Exclusive;
 
     const DISPATCHER: StaticDispatcher<Ticker, GetTotal> =
-        declare_static_dispatcher!(Ticker, GetTotal);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, GetTotal, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Ticker, GetTotal, |ctx| async move {
             let (guard, _message, answer) = ctx.into_parts();
             if let Some(answer) = answer {
                 let _ = answer.send(guard.total);
             }
-        }
-    }
+        });
 }
 
 struct TickSource;
@@ -1265,20 +1192,14 @@ declare_message!(Ping, ());
 impl MessageHandler<Ping> for Hooked {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Hooked, Ping> = declare_static_dispatcher!(Hooked, Ping);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Ping, Self, lock::Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Hooked, Ping> = declare_static_async_dispatcher!(Hooked, Ping, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
             actor_cx.extension().record("ping");
             if let Some(answer) = answer {
                 let _ = answer.send(());
             }
-        }
-    }
+        });
 }
 
 #[tokio::test]

@@ -100,7 +100,7 @@ unsafe impl Sync for ActorMessageDispatcher {}
 /// declared for, carrying the proof obligations of its declaration site.
 ///
 /// Values of this type are produced by
-/// [`declare_static_dispatcher!`](crate::declare_static_dispatcher) and live as
+/// [`declare_static_async_dispatcher!`](crate::declare_static_async_dispatcher) and live as
 /// the [`crate::actor::MessageHandler::DISPATCHER`] associated const.
 pub struct StaticDispatcher<A: ?Sized, M: ?Sized> {
     dispatcher: ActorMessageDispatcher,
@@ -116,7 +116,7 @@ impl<A: ?Sized, M: ?Sized> StaticDispatcher<A, M> {
     /// - erases the dispatch through `A`'s run loop's
     ///   [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter).
     ///
-    /// Use [`declare_static_dispatcher!`](crate::declare_static_dispatcher), which
+    /// Use [`declare_static_dispatcher!`](crate::declare_static_async_dispatcher), which
     /// upholds both by construction.
     pub const unsafe fn new_unchecked(dispatcher: ActorMessageDispatcher) -> Self {
         Self {
@@ -142,16 +142,16 @@ impl<A: ?Sized, M: ?Sized> core::fmt::Debug for StaticDispatcher<A, M> {
 /// Declare the [`crate::actor::MessageHandler::DISPATCHER`] constant for an
 /// actor/message pair.
 ///
-/// Expands to a dispatcher that folds lock acquisition and the handler into one
-/// acquire-then-handle composite and erases it through the actor's run loop's
-/// [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter) *at this
-/// declaration site*, where the concrete types are known. The converter's
-/// requirement is checked here: under a work-stealing loop's
-/// [`SendFutureConverter`](crate::actor::work::SendFutureConverter) a handler
-/// that produces a `!Send` future (or a `!Send` lock guard) fails to compile.
+/// `$producer` is the handler's work producer: a callable
+/// `FnOnce(MessageHandlerContext<'a, M, A, Mode>) -> impl Future<Output = ()> +
+/// Send + 'a` (an inherent fn, free fn, or closure).
+///
+/// Expands to a dispatcher that folds lock acquisition and the producer into one
+/// acquire-then-run composite and erases it through the actor's run loop's
+/// [`WorkConverter`](crate::actor::ActorRunLoop::WorkConverter).
 #[macro_export]
-macro_rules! declare_static_dispatcher {
-    ($actor:ty, $message:ty) => {{
+macro_rules! declare_static_async_dispatcher {
+    ($actor:ty, $message:ty, |$ctx:ident| $body:expr) => {{
         unsafe fn invoke<'ctx>(
             dispatch_context: $crate::actor::dispatch::DispatchContextPtr<'ctx>,
             message_context: $crate::actor::dispatch::DispatchedActorMessageContext,
@@ -160,6 +160,17 @@ macro_rules! declare_static_dispatcher {
             type RunLoop = <$actor as $crate::actor::Actor>::RunLoop;
             type Converter = <RunLoop as $crate::actor::ActorRunLoop<$actor>>::WorkConverter;
             type Mode = <$actor as $crate::actor::MessageHandler<$message>>::AccessMode;
+
+            fn __factories_run_handler<'__rt>(
+                $ctx: $crate::actor::MessageHandlerContext<
+                    '__rt,
+                    $message,
+                    $actor,
+                    <$actor as $crate::actor::MessageHandler<$message>>::AccessMode,
+                >,
+            ) -> impl ::core::future::Future<Output = ()> + '__rt {
+                $body
+            }
 
             // SAFETY: The `StaticDispatcher` contract guarantees this dispatcher is
             //         only invoked with the dispatch context of `$actor`'s run loop.
@@ -189,13 +200,8 @@ macro_rules! declare_static_dispatcher {
                     )
                 };
 
-                // `handle` returns this loop's `IntoRunLoopWork`; erase it through
-                // the loop's converter and drive it. The converter's `Erased` is a
-                // future here (the standard loops' protocol), so awaiting it is the
-                // drive; a non-future converter simply can't reach this macro.
-                let work = <$actor as $crate::actor::MessageHandler<$message>>::handle(ctx);
-                let handler = $crate::actor::work::into_work::<Converter, _>(work);
-                span.instrument(handler).await;
+                let work = __factories_run_handler(ctx);
+                span.instrument(work).await;
             };
 
             // Erase the acquire-then-handle composite through the same converter
@@ -226,7 +232,112 @@ macro_rules! declare_static_dispatcher {
     }};
 }
 
-pub use declare_static_dispatcher;
+pub use declare_static_async_dispatcher;
+
+/// Implement [`MessageHandler`](crate::actor::MessageHandler) for an
+/// actor/message pair.
+///
+/// This is the ergonomic front-end over
+/// [`declare_static_async_dispatcher!`](crate::declare_static_async_dispatcher):
+/// it writes the whole `impl MessageHandler` block (the `AccessMode` and the
+/// `DISPATCHER` const) so callers never spell the const out by hand. Two forms:
+///
+/// **Terse** - name the actor, message, access mode and a handler *producer*: a
+/// `FnOnce(MessageHandlerContext<'_, M, A, Mode>) -> impl Future<Output = ()> +
+/// Send` that may be a function path or an inline closure.
+/// ```ignore
+/// implement_message_handler!(Ticker, GetTotal, lock::Exclusive, Ticker::handle_get_total);
+/// implement_message_handler!(Ticker, GetTotal, lock::Exclusive, |ctx| async move { /* .. */ });
+/// ```
+///
+/// **Trait-impl** - reads like a normal `impl`, with the handler written as an
+/// `async fn`. The context parameter may be left untyped (the macro fills in
+/// `MessageHandlerContext<'_, M, A, Mode>`) or annotated explicitly:
+/// ```ignore
+/// implement_message_handler! {
+///     impl MessageHandler<GetTotal> for Ticker {
+///         type AccessMode = lock::Exclusive;
+///
+///         async fn handle(ctx) {
+///             let (guard, _message, answer) = ctx.into_parts();
+///             if let Some(answer) = answer {
+///                 let _ = answer.send(guard.total);
+///             }
+///         }
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! implement_message_handler {
+    // Trait-impl form, untyped context: fill in the handler context type.
+    (
+        impl MessageHandler<$message:ty> for $actor:ty {
+            type AccessMode = $access:ty;
+            async fn $name:ident($ctx:ident) $body:block
+        }
+    ) => {
+        $crate::implement_message_handler!(@build $actor, $message, $access,
+            |__factories_ctx| {
+                async fn $name(
+                    $ctx: $crate::actor::MessageHandlerContext<'_, $message, $actor, $access>,
+                ) $body
+                $name(__factories_ctx)
+            });
+    };
+
+    // Trait-impl form, explicitly typed context: use the annotation verbatim.
+    (
+        impl MessageHandler<$message:ty> for $actor:ty {
+            type AccessMode = $access:ty;
+            async fn $name:ident($ctx:ident : $ctxty:ty) $body:block
+        }
+    ) => {
+        $crate::implement_message_handler!(@build $actor, $message, $access,
+            |__factories_ctx| {
+                async fn $name($ctx: $ctxty) $body
+                $name(__factories_ctx)
+            });
+    };
+
+    // Terse form: thread a handler producer (fn path or closure).
+    ($actor:ty, $message:ty, $access:ty, $producer:expr $(,)?) => {
+        $crate::implement_message_handler!(@build $actor, $message, $access,
+            |__factories_ctx| {
+                // Route the producer through a parameter-typed trampoline: a
+                // bare `|ctx| async move { .. }` producer cannot infer `ctx`
+                // from the call alone, so the `FnOnce` bound pins it.
+                fn __factories_call<'__rt, __F, __Fut>(
+                    ctx: $crate::actor::MessageHandlerContext<'__rt, $message, $actor, $access>,
+                    producer: __F,
+                ) -> __Fut
+                where
+                    __F: ::core::ops::FnOnce(
+                        $crate::actor::MessageHandlerContext<'__rt, $message, $actor, $access>,
+                    ) -> __Fut,
+                    __Fut: ::core::future::Future<Output = ()> + '__rt,
+                {
+                    producer(ctx)
+                }
+                __factories_call(__factories_ctx, $producer)
+            });
+    };
+
+    // Internal: emit the `MessageHandler` impl, threading the closure
+    // (`|ident| expr`) into the dispatcher-declaration primitive. The closure is
+    // forwarded as raw tokens (not captured as `:expr`) so the primitive can
+    // re-match its `|$ctx| $body` shape.
+    (@build $actor:ty, $message:ty, $access:ty, |$ctx:ident| $body:expr) => {
+        impl $crate::actor::MessageHandler<$message> for $actor {
+            type AccessMode = $access;
+
+            const DISPATCHER:
+                $crate::actor::dispatch::StaticDispatcher<$actor, $message> =
+                $crate::declare_static_async_dispatcher!($actor, $message, |$ctx| $body);
+        }
+    };
+}
+
+pub use implement_message_handler;
 
 #[derive(Debug)]
 pub struct DispatchedActorMessage {

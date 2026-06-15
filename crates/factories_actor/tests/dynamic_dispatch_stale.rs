@@ -9,10 +9,10 @@ use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher}
 use factories_actor::actor::event::DefaultMailboxDriver;
 use factories_actor::actor::handle::TypedActorHandle;
 use factories_actor::actor::rtti::ActorRtti;
-use factories_actor::actor::work::{IntoRunLoopWork, SendFutureConverter};
+use factories_actor::actor::work::SendFutureConverter;
 use factories_actor::actor::{
     AccessMode, Actor, ActorRunLoop, ActorRunLoopDispatchContext, ActorRuntimeBinder, LockStrategy,
-    MessageHandler, MessageHandlerContext,
+    MessageHandler,
 };
 use factories_actor::factories_collect::GlobalCollectionEntry;
 use factories_actor::message::Message;
@@ -20,7 +20,7 @@ use factories_actor::register_dynamic_handler;
 use factories_actor::runtime::registry::{
     DYNAMIC_HANDLERS, DynamicHandlerRegistration, RegistryBinder, dispatch_registry,
 };
-use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
+use factories_actor::{declare_actor_rtti, declare_message, declare_static_async_dispatcher};
 // ---------------------------------------------------------------------------
 // Minimal actor: never spawned, only used to construct binders. The channel
 // and run loop are inert stand-ins.
@@ -123,15 +123,9 @@ impl MessageHandler<EarlyMsg> for StaleActor {
     type AccessMode = ReadAccess;
 
     const DISPATCHER: StaticDispatcher<StaleActor, EarlyMsg> =
-        declare_static_dispatcher!(StaleActor, EarlyMsg);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, EarlyMsg, Self, ReadAccess>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(StaleActor, EarlyMsg, |ctx| async move {
             drop(ctx);
-        }
-    }
+        });
 }
 
 register_dynamic_handler!(StaleActor, EarlyMsg);
@@ -145,15 +139,9 @@ impl MessageHandler<LateMsg> for StaleActor {
     type AccessMode = ReadAccess;
 
     const DISPATCHER: StaticDispatcher<StaleActor, LateMsg> =
-        declare_static_dispatcher!(StaleActor, LateMsg);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, LateMsg, Self, ReadAccess>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(StaleActor, LateMsg, |ctx| async move {
             drop(ctx);
-        }
-    }
+        });
 }
 
 static LATE_REGISTRATION: DynamicHandlerRegistration =
@@ -203,6 +191,6 @@ fn late_registrations_are_detected() {
         assert!(
             result.is_err(),
             "constructing a binder against a stale registry must panic in debug builds"
-        );   
+        );
     }
 }

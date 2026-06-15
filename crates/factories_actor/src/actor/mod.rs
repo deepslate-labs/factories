@@ -280,18 +280,12 @@ pub trait MessageHandler<M: Message>: Actor {
 
     /// The statically bound dispatcher for this actor/message pair.
     ///
-    /// Declared via [`declare_static_dispatcher!`](crate::declare_static_dispatcher),
-    /// which erases the dispatch through the run loop's
-    /// [`WorkConverter`](ActorRunLoop::WorkConverter) where the concrete handler
-    /// types are known (so the converter's `Send` requirement is checked there).
-    /// Typed handles use this constant to skip the runtime binder at statically
-    /// known dispatch sites.
+    /// Usually written through
+    /// [`implement_message_handler!`](crate::implement_message_handler) (which
+    /// emits this whole impl) or, at a lower level,
+    /// [`declare_static_async_dispatcher!`](crate::declare_static_async_dispatcher);
+    /// a custom implementation is also possible.
     const DISPATCHER: StaticDispatcher<Self, M>;
-
-    /// Handle the message, producing this loop's work.
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, M, Self, Self::AccessMode>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a;
 }
 
 /// Implementation that binds handlers to messages.

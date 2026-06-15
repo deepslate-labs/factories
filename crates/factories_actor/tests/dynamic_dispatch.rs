@@ -9,19 +9,18 @@ use factories_actor::actor::dispatch::StaticDispatcher;
 use factories_actor::actor::event::DefaultMailboxDriver;
 use factories_actor::actor::handle::{ActorHandle, TypedActorHandle};
 use factories_actor::actor::rtti::ActorRtti;
-use factories_actor::actor::work::IntoRunLoopWork;
-use factories_actor::actor::{Actor, ActorRunLoop, MessageHandler, MessageHandlerContext};
+use factories_actor::actor::{Actor, MessageHandler};
 use factories_actor::message::Message;
 use factories_actor::message::channel::answer_channel;
 use factories_actor::message::envelope::MessageEnvelope;
 use factories_actor::register_dynamic_handler;
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
-use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::{Exclusive, Shared};
 use factories_actor::runtime::registry::{RegistryBinder, dispatch_registry};
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::tokio::{TokioMutexLock, TokioRwLock, TokioTaskSpawner};
 use factories_actor::spawn::ActorLauncher;
-use factories_actor::{declare_actor_rtti, declare_message, declare_static_dispatcher};
+use factories_actor::{declare_actor_rtti, declare_message, declare_static_async_dispatcher};
 // ---------------------------------------------------------------------------
 // Calc: handles two unique messages (AddValue, GetValue), one shared message
 // (Describe) and one statically-only handled message (Unregistered).
@@ -79,16 +78,11 @@ declare_message!(AddValue, ());
 impl MessageHandler<AddValue> for Calc {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Calc, AddValue> = declare_static_dispatcher!(Calc, AddValue);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, AddValue, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Calc, AddValue> =
+        declare_static_async_dispatcher!(Calc, AddValue, |ctx| async move {
             let (mut guard, message, _) = ctx.into_parts();
             guard.value += message.0;
-        }
-    }
+        });
 }
 
 register_dynamic_handler!(Calc, AddValue);
@@ -102,18 +96,13 @@ declare_message!(GetValue, u32);
 impl MessageHandler<GetValue> for Calc {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Calc, GetValue> = declare_static_dispatcher!(Calc, GetValue);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, GetValue, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Calc, GetValue> =
+        declare_static_async_dispatcher!(Calc, GetValue, |ctx| async move {
             let (guard, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
                 let _ = answer.send(guard.value);
             }
-        }
-    }
+        });
 }
 
 register_dynamic_handler!(Calc, GetValue);
@@ -126,18 +115,13 @@ declare_message!(Describe, String);
 impl MessageHandler<Describe> for Calc {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Calc, Describe> = declare_static_dispatcher!(Calc, Describe);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Describe, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+    const DISPATCHER: StaticDispatcher<Calc, Describe> =
+        declare_static_async_dispatcher!(Calc, Describe, |ctx| async move {
             let (guard, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
                 let _ = answer.send(format!("calc({})", guard.value));
             }
-        }
-    }
+        });
 }
 
 register_dynamic_handler!(Calc, Describe);
@@ -146,18 +130,12 @@ impl MessageHandler<Describe> for Mirror {
     type AccessMode = Shared;
 
     const DISPATCHER: StaticDispatcher<Mirror, Describe> =
-        declare_static_dispatcher!(Mirror, Describe);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Describe, Self, Shared>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Mirror, Describe, |ctx| async move {
             let (_, _, answer) = ctx.into_parts();
             if let Some(answer) = answer {
                 let _ = answer.send("mirror".to_string());
             }
-        }
-    }
+        });
 }
 
 register_dynamic_handler!(Mirror, Describe);
@@ -171,15 +149,9 @@ impl MessageHandler<Unregistered> for Calc {
     type AccessMode = Exclusive;
 
     const DISPATCHER: StaticDispatcher<Calc, Unregistered> =
-        declare_static_dispatcher!(Calc, Unregistered);
-
-    fn handle<'a>(
-        ctx: MessageHandlerContext<'a, Unregistered, Self, Exclusive>,
-    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        async move {
+        declare_static_async_dispatcher!(Calc, Unregistered, |ctx| async move {
             drop(ctx);
-        }
-    }
+        });
 }
 
 // -- Helpers --------------------------------------------------------------------
