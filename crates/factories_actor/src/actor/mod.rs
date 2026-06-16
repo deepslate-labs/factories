@@ -457,6 +457,7 @@ impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
     /// transitions the lifecycle to [`Dead`](state::LifecycleState::Dead).
     /// As on the init path, the error is observable before `Dead` is.
     pub fn fail(&self, error: A::Error) {
+        crate::obs::record_current_span_error(core::any::type_name::<A::Error>());
         self.state.record_failure(error);
     }
 

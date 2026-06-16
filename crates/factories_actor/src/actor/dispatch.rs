@@ -1,5 +1,7 @@
 use crate::actor::work::WorkConverter;
 use crate::message::envelope::MessageEnvelope;
+#[cfg(feature = "tracing")]
+use crate::message::envelope::EnvelopeType;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
@@ -189,6 +191,11 @@ macro_rules! declare_static_async_dispatcher {
 
                 let (envelope, span) = message_context.into_parts();
 
+                let __factories_actor_id =
+                    $crate::actor::ActorRunLoopDispatchContext::shared_state(dispatch_context)
+                        .id()
+                        .as_usize() as u64;
+
                 // SAFETY: The `StaticDispatcher` contract guarantees the envelope
                 //         carries a message of type `$message`.
                 let ctx = unsafe {
@@ -201,7 +208,13 @@ macro_rules! declare_static_async_dispatcher {
                 };
 
                 let work = __factories_run_handler(ctx);
-                span.instrument(work).await;
+                span.instrument(
+                    <$actor as $crate::actor::Actor>::RTTI.name(),
+                    __factories_actor_id,
+                    <$message as $crate::message::Message>::RTTI.name(),
+                    work,
+                )
+                .await;
             };
 
             // Erase the acquire-then-handle composite through the same converter
@@ -448,11 +461,15 @@ impl DispatchedActorMessageContext {
 
     /// Decompose the context into the envelope and the handler span.
     pub fn into_parts(self) -> (MessageEnvelope, HandlerSpan) {
+        #[cfg(feature = "tracing")]
+        let dispatch = self.envelope.ty();
         (
             self.envelope,
             HandlerSpan {
                 #[cfg(feature = "tracing")]
                 span: self.span,
+                #[cfg(feature = "tracing")]
+                dispatch,
             },
         )
     }
@@ -469,28 +486,54 @@ unsafe impl Send for DispatchedActorMessageContext {}
 pub struct HandlerSpan {
     #[cfg(feature = "tracing")]
     span: tracing::Span,
+    #[cfg(feature = "tracing")]
+    dispatch: EnvelopeType,
 }
 
 #[cfg(feature = "tracing")]
 impl HandlerSpan {
-    /// Instrument the handler future with a span parented to the send site.
-    pub fn instrument<F: Future>(self, fut: F) -> impl Future<Output = F::Output> {
-        use tracing::Instrument;
-
-        fut.instrument(tracing::trace_span!(
-            // TODO: More instrumentation here
+    /// Open the per-message span (a child of the send site).
+    pub fn instrument<F: Future>(
+        self,
+        actor: &'static str,
+        actor_id: u64,
+        message: &'static str,
+        fut: F,
+    ) -> impl Future<Output = F::Output> {
+        let dispatch = match self.dispatch {
+            EnvelopeType::Tell => "tell",
+            EnvelopeType::Ask => "ask",
+        };
+        let span = tracing::trace_span!(
             parent: &self.span,
-            "message_handler",
-        ))
+            "factories.handle_message",
+            actor.name = actor,
+            actor.id = actor_id,
+            actor.message = message,
+            actor.dispatch = dispatch,
+            // Filled by `ActorContext::fail` if the handler fails the actor.
+            error.type = tracing::field::Empty,
+            otel.name = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+
+        #[cfg(feature = "opentelemetry")]
+        span.record("otel.name", alloc::format!("{actor}.{message}").as_str());
+
+        tracing::Instrument::instrument(fut, span)
     }
 }
 
 #[cfg(not(feature = "tracing"))]
 impl HandlerSpan {
-    /// Instrument the handler future with a span parented to the send site.
-    ///
-    /// No-op without the `tracing` feature.
-    pub fn instrument<F: Future>(self, fut: F) -> F {
+    /// Run the handler future. No-op wrapper without the `tracing` feature.
+    pub fn instrument<F: Future>(
+        self,
+        _actor: &'static str,
+        _actor_id: u64,
+        _message: &'static str,
+        fut: F,
+    ) -> F {
         fut
     }
 }

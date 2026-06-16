@@ -23,6 +23,8 @@ tokio-lock = ["factories_actor/tokio-lock"]
 tokio-runtime = ["factories_actor/tokio-runtime"]
 # Diagnostic spans.
 tracing = ["factories_actor/tracing"]
+# `otel.*` convention fields on the framework's spans (implies `tracing`).
+opentelemetry = ["factories_actor/opentelemetry"]
 # Global dynamic-dispatch registry: handlers registered at binary load.
 dynamic-dispatch = ["factories_actor/dynamic-dispatch"]
 

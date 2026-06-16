@@ -159,6 +159,8 @@ impl Subscription {
             return;
         };
 
+        crate::obs::terminated_delivered(rtti.name(), watched, kind);
+
         let _ = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
             .send()
             .await;
@@ -176,6 +178,8 @@ impl Subscription {
         let Some((watcher, message)) = self.prepare(watched, rtti, kind) else {
             return;
         };
+
+        crate::obs::terminated_delivered(rtti.name(), watched, kind);
 
         let _ = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
             .try_send();

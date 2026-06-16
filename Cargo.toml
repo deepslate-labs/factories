@@ -22,6 +22,7 @@ critical-section = { version = "1.2.0", default-features = false }
 
 # Observability
 tracing = { version = "0.1.44", default-features = false }
+tracing-subscriber = { version = "0.3.20", default-features = false }
 
 # Macro utilities
 paste = "1.0.15"

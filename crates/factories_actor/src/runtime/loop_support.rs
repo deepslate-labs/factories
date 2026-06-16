@@ -124,6 +124,12 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
             }
         };
 
+        let (outcome, failed) = match reason {
+            StopReason::Finished => ("finished", false),
+            StopReason::Failed(_) => ("failed", true),
+        };
+        let id = shared.id();
+
         // Sole owner now: reclaim the actor by value for the by-value stop hook,
         // erase its work through the loop's converter, and drive it.
         let actor = lock_strategy.into_inner();
@@ -131,8 +137,12 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         let stop = into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(
             actor.on_stop(reason, cx),
         );
-        <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(stop)
-            .await;
+        let stop_fut =
+            <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+                stop,
+            );
+        crate::obs::run_on_stop(A::RTTI.name(), id, stop_fut).await;
+        crate::obs::actor_stopped(A::RTTI.name(), id, outcome, failed);
 
         // Push termination signals to watchers on the async path, awaiting
         // mailbox room so none are dropped. Drains the set, so the drop guard's
@@ -243,10 +253,11 @@ pub async fn standard_run_with<A, L, I, M>(
             let cx = ActorContext::new(&shared, &self_ref);
             let start =
                 into_work::<<A::RunLoop as ActorRunLoop<A>>::WorkConverter, _>(actor.on_start(cx));
-            <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
-                start,
-            )
-            .await;
+            let start_fut =
+                <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+                    start,
+                );
+            crate::obs::run_on_start(A::RTTI.name(), shared.id(), start_fut).await;
         }
 
         // A failing start hook aborts startup before the loop runs - and the
@@ -255,6 +266,7 @@ pub async fn standard_run_with<A, L, I, M>(
             return;
         }
         shared.transition_running();
+        crate::obs::actor_started(A::RTTI.name(), shared.id());
 
         // Build the driver from the actor (seedable via its `From<&Actor>`
         // impl), before the actor moves into its lock.

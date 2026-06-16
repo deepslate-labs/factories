@@ -11,6 +11,9 @@ pub mod message;
 pub mod runtime;
 pub mod spawn;
 
+/// Internal `tracing` instrumentation helpers (no-ops without the feature).
+pub(crate) mod obs;
+
 /// Method-style message handlers: marks an inherent impl block, every
 /// `#[handler]` method additionally becomes a message handler. See the macro
 /// documentation for details.

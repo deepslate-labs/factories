@@ -452,6 +452,15 @@ impl<A: Actor + ?Sized> Drop for DeadOnDropGuard<A> {
         // handler failure has already recorded one, making this a no-op; only
         // a panic / task abort lands here with an empty reason cell.
         self.state.mark_aborted();
+        // Only the abort path lands here with `Aborted` actually recorded (the
+        // clean / failed paths recorded their reason earlier, so `mark_aborted`
+        // was a no-op above): emit the abnormal-termination event for it.
+        if matches!(
+            self.state.termination_reason(),
+            Some(TerminationReason::Aborted)
+        ) {
+            crate::obs::actor_aborted(A::RTTI.name(), self.state.id());
+        }
         // Fallback notification for the paths that skip the async terminal
         // (panic / task abort): can't await here, so best-effort. The clean and
         // failed paths already delivered (and drained) via the async

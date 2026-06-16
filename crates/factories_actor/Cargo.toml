@@ -19,6 +19,10 @@ tokio-lock = ["dep:tokio", "tokio/sync"]
 # The default actor channel and task spawner (tokio mpsc mailbox + tokio rt).
 tokio-runtime = ["dep:tokio", "tokio/rt", "tokio/sync"]
 tracing = ["dep:tracing"]
+# Additionally stamp `otel.*` convention fields (otel.name, otel.kind) on the
+# framework's spans so `tracing-opentelemetry` exports them with meaningful
+# operation names + span kinds. Pure field emission - pulls in no new crate.
+opentelemetry = ["tracing"]
 
 # Global dynamic-dispatch registry: handlers registered at binary load via
 # link-section constructors (factories_collect).
@@ -46,6 +50,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing-subscriber = { workspace = true, features = ["std", "registry"] }
 paste = { workspace = true }
 
 # Tests run on std targets; provide the critical-section implementation that the
