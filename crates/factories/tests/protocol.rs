@@ -10,11 +10,11 @@
     feature = "tokio-answer"
 ))]
 
-use factories_actor::actor::Actor;
-use factories_actor::actor::handle::{AnyActorHandle, AnyLocalActorHandle, TypedActorHandle};
-use factories_actor::protocol;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::Actor;
+use factories::actor::handle::{AnyActorHandle, AnyLocalActorHandle, TypedActorHandle};
+use factories::protocol;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 // -- A derived actor with two handlers -> two generated messages ----------------
 
@@ -23,7 +23,7 @@ struct Calc {
     value: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Calc {
     #[handler]
     fn add(&mut self, amount: u32) {
@@ -101,7 +101,7 @@ async fn erased_handle_from_typed_is_infallible() {
 #[tokio::test]
 async fn erased_handle_from_any_binds_via_registry() {
     let any: AnyActorHandle = spawn_calc(7).await.erase_type();
-    let counter = CountingHandle::try_from(any).expect("Calc speaks Counting");
+    let counter = CountingHandle::try_bind(any).expect("Calc speaks Counting");
 
     assert_eq!(counter.total(Total).ask().await.expect("ask"), 7);
 }
@@ -109,7 +109,7 @@ async fn erased_handle_from_any_binds_via_registry() {
 #[tokio::test]
 async fn heterogeneous_collection_of_protocol_handles() {
     let a: CountingHandle = spawn_calc(1).await.into();
-    let b = CountingHandle::try_from(spawn_calc(2).await.erase_type()).expect("speaks Counting");
+    let b = CountingHandle::try_bind(spawn_calc(2).await.erase_type()).expect("speaks Counting");
 
     let counters: Vec<CountingHandle> = vec![a, b];
     let mut total = 0;
@@ -149,6 +149,6 @@ async fn local_protocol_handle_works() {
 
     // Also constructible from an erased local handle via the registry.
     let any: AnyLocalActorHandle = spawn_calc(5).await.erase_type_local();
-    let local2 = LocalCountingHandle::try_from(any).expect("Calc speaks LocalCounting");
+    let local2 = LocalCountingHandle::try_bind(any).expect("Calc speaks LocalCounting");
     assert_eq!(local2.total(Total).ask().await.expect("ask"), 5);
 }

@@ -5,7 +5,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use factories_actor::actor::channel::ActorChannelSendable;
+use factories::actor::channel::ActorChannelSendable;
 use factories_benchmarks::{fac, kam, runtime};
 
 fn roundtrip(c: &mut Criterion) {

@@ -1,14 +1,14 @@
 //! `ActorTemplate`: reusable component bundles, with explicit keys overriding
 //! individual members.
 
-use factories_actor::actor::{Actor, StaticOnlyBinder};
-use factories_actor::runtime::tokio::TokioMpscActorChannel;
-use factories_actor::runtime::lock::UnguardedLock;
-use factories_actor::runtime::registry::RegistryBinder;
-use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-use factories_actor::runtime::template::ActorTemplate;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::{Actor, StaticOnlyBinder};
+use factories::runtime::tokio::TokioMpscActorChannel;
+use factories::runtime::lock::UnguardedLock;
+use factories::runtime::registry::RegistryBinder;
+use factories::runtime::sequential_loop::SequentialRunLoop;
+use factories::runtime::template::ActorTemplate;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 use crate::actor::CustomError;
 use crate::util::assert_type_eq;
@@ -29,7 +29,7 @@ struct Templated {
     total: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Templated {
     #[handler]
     fn bump(&mut self, by: u32) -> u32 {

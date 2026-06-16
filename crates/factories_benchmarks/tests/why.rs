@@ -8,7 +8,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use factories_actor::actor::channel::ActorChannelSendable;
+use factories::actor::channel::ActorChannelSendable;
 use factories_benchmarks::{fac, kam};
 
 struct Counting;
@@ -50,8 +50,8 @@ async fn factories_allocs_per_message() {
     let value = h.ask(fac::Get).exchange().await.unwrap();
     let allocs = ALLOCS.load(Ordering::Relaxed) - before;
 
-    // Fairness: the ask drained every tell — the bench measures real work.
-    assert_eq!(value, base + M, "ask is not a barrier — bench would be unfair");
+    // Fairness: the ask drained every tell - the bench measures real work.
+    assert_eq!(value, base + M, "ask is not a barrier - bench would be unfair");
     println!(
         "factories: {allocs} allocs for {M} msgs = {:.2} allocs/msg",
         allocs as f64 / M as f64

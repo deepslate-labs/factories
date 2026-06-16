@@ -13,17 +13,18 @@ pub fn implement_message(
     ident: &Ident,
     answer: &TokenStream,
     rtti_name: &TokenStream,
+    krate: &TokenStream,
 ) -> TokenStream {
     quote! {
         const _: () = {
-            ::factories_actor::message::rtti::declare_message_rtti!(
+            #krate::declare_message_rtti!(
                 __DERIVED_MESSAGE_RTTI,
                 #ident,
                 #rtti_name
             );
 
-            unsafe impl ::factories_actor::message::Message for #ident {
-                const RTTI: &'static ::factories_actor::message::rtti::MessageRtti =
+            unsafe impl #krate::message::Message for #ident {
+                const RTTI: &'static #krate::message::rtti::MessageRtti =
                     __DERIVED_MESSAGE_RTTI;
 
                 type Answer = #answer;
@@ -38,6 +39,7 @@ pub fn implement_message(
 struct MessageConfig {
     answer: Option<Type>,
     name: Option<LitStr>,
+    crate_path: Option<LitStr>,
 }
 
 pub fn derive_message(input: DeriveInput) -> TokenStream {
@@ -57,8 +59,10 @@ pub fn derive_message(input: DeriveInput) -> TokenStream {
                 util::set_value(&mut config.answer, &meta)
             } else if meta.path.is_ident("name") {
                 util::set_value(&mut config.name, &meta)
+            } else if meta.path.is_ident("crate") {
+                util::set_value(&mut config.crate_path, &meta)
             } else {
-                Err(meta.error("unknown key, expected one of `answer`, `name`"))
+                Err(meta.error("unknown key, expected one of `answer`, `name`, `crate`"))
             }
         });
 
@@ -70,8 +74,9 @@ pub fn derive_message(input: DeriveInput) -> TokenStream {
     let ident = &input.ident;
     let answer = util::value_or_default(config.answer, quote!(()));
     let rtti_name = util::rtti_name(config.name, ident);
+    let krate = util::krate_path(config.crate_path.as_ref());
 
     // (If diagnostics were emitted above, proc_macro_error discards this
     // output.)
-    implement_message(ident, &answer, &rtti_name)
+    implement_message(ident, &answer, &rtti_name, &krate)
 }

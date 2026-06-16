@@ -608,3 +608,43 @@ pub trait ActorHandle: ActorHandleBase {
 }
 
 impl<T: ActorHandleBase> ActorHandle for T {}
+
+// A smart pointer to a handle is itself a handle: this lets the derive's
+// generated `…Handle` newtype (which `Deref`s to the `TypedActorHandle` it wraps)
+// satisfy `&impl ActorHandle` at call sites like `watch`, without an explicit
+// `&*`. No overlap with the inherent impls above - none of them implement
+// `Deref`, and downstream crates cannot add such an impl for them.
+impl<H> ActorHandleBase for H
+where
+    H: core::ops::Deref,
+    H::Target: ActorHandleBase,
+{
+    type ActorIdentity = <H::Target as ActorHandleBase>::ActorIdentity;
+
+    fn identity(&self) -> &Arc<Self::ActorIdentity> {
+        (**self).identity()
+    }
+}
+
+/// A handle that resolves to a concrete actor's [`TypedActorHandle`].
+///
+/// Implemented by `TypedActorHandle<A>` itself (the identity) and by the
+/// derive's generated `…Handle` newtype. A protocol's erased handle is built
+/// `From` any `DerivedHandle`, so `From`/`.into()` accepts either a bare typed
+/// handle or a generated one. Not public API.
+#[doc(hidden)]
+pub trait DerivedHandle {
+    /// The actor this handle talks to.
+    type Actor: Actor + ?Sized;
+
+    /// Recover the underlying typed handle.
+    fn into_typed_handle(self) -> TypedActorHandle<Self::Actor>;
+}
+
+impl<A: Actor + ?Sized> DerivedHandle for TypedActorHandle<A> {
+    type Actor = A;
+
+    fn into_typed_handle(self) -> TypedActorHandle<A> {
+        self
+    }
+}

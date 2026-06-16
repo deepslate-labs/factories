@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/factories",
     "crates/factories_actor",
     "crates/factories_actor_macro",
     "crates/factories_benchmarks",
@@ -35,6 +36,7 @@ seq-macro = "0.3.6"
 thiserror = { version = "2.0.18", default-features = false }
 
 # Own crates
+factories = { path = "crates/factories" }
 factories_actor = { path = "crates/factories_actor" }
 factories_actor_macro = { path = "crates/factories_actor_macro" }
 factories_collect = { path = "crates/factories_collect" }

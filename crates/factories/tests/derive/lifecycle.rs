@@ -5,12 +5,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use factories_actor::actor::lifecycle::StopReason;
-use factories_actor::actor::{Actor, ActorContext};
-use factories_actor::runtime::lock::UnguardedLock;
-use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::lifecycle::StopReason;
+use factories::actor::{Actor, ActorContext};
+use factories::runtime::lock::UnguardedLock;
+use factories::runtime::sequential_loop::SequentialRunLoop;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 /// Shared event log so the test can assert hook ordering.
 #[derive(Default, Clone)]
@@ -34,7 +34,7 @@ impl Log {
 )]
 struct Hooked;
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Hooked {
     #[on_start]
     async fn start(&mut self, cx: ActorContext<'_, Self>) {
@@ -92,7 +92,7 @@ struct StartBoom;
 #[actor(error = StartBoom, lock = UnguardedLock<Self>, run_loop = SequentialRunLoop<Self>)]
 struct FailingStart;
 
-#[factories_actor::messages]
+#[factories::messages]
 impl FailingStart {
     /// `die_on_err`: returning `Err` fails the actor (routed to `cx.fail`), which
     /// aborts startup before the loop runs.

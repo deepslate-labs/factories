@@ -14,11 +14,11 @@
 
 /// `factories` fixtures.
 pub mod fac {
-    use factories_actor::actor::Actor;
-    use factories_actor::runtime::tokio::TokioTaskSpawner;
-    use factories_actor::spawn::ActorLauncher;
+    use factories::actor::Actor;
+    use factories::runtime::tokio::TokioTaskSpawner;
+    use factories::spawn::ActorLauncher;
 
-    /// Concurrent-loop counter — the `#[derive(Actor)]` defaults.
+    /// Concurrent-loop counter - the `#[derive(Actor)]` defaults.
     #[derive(Actor)]
     pub struct Counter {
         pub value: u64,
@@ -33,7 +33,7 @@ pub mod fac {
             .expect("counter init is infallible")
     }
 
-    #[factories_actor::messages]
+    #[factories::messages]
     impl Counter {
         /// Fire-and-forget increment (`Inc` message, answer `()`).
         #[handler]
@@ -41,7 +41,7 @@ pub mod fac {
             self.value = self.value.wrapping_add(1);
         }
 
-        /// Increment carrying a large (256-byte) payload — too big for the
+        /// Increment carrying a large (256-byte) payload - too big for the
         /// envelope's inline storage, so factories must box it too. Used to test
         /// whether the inline-payload advantage is what makes factories faster.
         #[handler]
@@ -62,11 +62,11 @@ pub mod fac {
 /// (the best-case single-threaded path). Lives in its own module so the
 /// generated `Inc`/`Get` message types do not collide with [`fac`].
 pub mod fac_seq {
-    use factories_actor::actor::Actor;
-    use factories_actor::runtime::lock::UnguardedLock;
-    use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-    use factories_actor::runtime::tokio::TokioTaskSpawner;
-    use factories_actor::spawn::ActorLauncher;
+    use factories::actor::Actor;
+    use factories::runtime::lock::UnguardedLock;
+    use factories::runtime::sequential_loop::SequentialRunLoop;
+    use factories::runtime::tokio::TokioTaskSpawner;
+    use factories::spawn::ActorLauncher;
 
     #[derive(Actor)]
     #[actor(run_loop = SequentialRunLoop<Self>, lock = UnguardedLock<Self>)]
@@ -82,7 +82,7 @@ pub mod fac_seq {
             .expect("counter init is infallible")
     }
 
-    #[factories_actor::messages]
+    #[factories::messages]
     impl Counter {
         #[handler]
         pub fn inc(&mut self) {
@@ -134,7 +134,7 @@ pub mod kam {
         }
     }
 
-    /// Increment carrying a large (256-byte) payload — kameo already boxes every
+    /// Increment carrying a large (256-byte) payload - kameo already boxes every
     /// message, so this only changes the box's size for kameo.
     pub struct IncBig(pub [u64; 32]);
 

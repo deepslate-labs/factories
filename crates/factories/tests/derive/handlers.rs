@@ -2,12 +2,12 @@
 //! existing messages, additivity (methods stay callable) and automatic
 //! dynamic-dispatch registration.
 
-use factories_actor::actor::channel::ActorChannelSendable;
-use factories_actor::actor::handle::ActorHandle;
-use factories_actor::message::Message;
-use factories_actor::message::envelope::MessageEnvelope;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::channel::ActorChannelSendable;
+use factories::actor::handle::ActorHandle;
+use factories::message::Message;
+use factories::message::envelope::MessageEnvelope;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 use crate::actor::{Customized, CustomizedHandle, Defaulted, DefaultedHandle, Get};
 use crate::util::assert_type_eq;
@@ -20,7 +20,7 @@ pub struct AddBoth {
     pub right: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Customized {
     /// Stays a plain method (the macro is additive), additionally reachable
     /// through the generated `Touch` message.
@@ -43,7 +43,7 @@ impl Customized {
     }
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Defaulted {
     /// On a registry-bound actor: the handler must be reachable dynamically
     /// without an explicit `register_dynamic_handler!`.

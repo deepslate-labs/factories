@@ -18,6 +18,7 @@ struct ActorConfig {
     shared: Option<Type>,
     event_driver: Option<Type>,
     name: Option<LitStr>,
+    crate_path: Option<LitStr>,
 }
 
 pub fn derive_actor(input: DeriveInput) -> TokenStream {
@@ -51,11 +52,13 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 util::set_value(&mut config.event_driver, &meta)
             } else if meta.path.is_ident("name") {
                 util::set_value(&mut config.name, &meta)
+            } else if meta.path.is_ident("crate") {
+                util::set_value(&mut config.crate_path, &meta)
             } else {
                 Err(meta.error(
                     "unknown key, expected one of \
                      `template`, `channel`, `error`, `binder`, `lock`, `run_loop`, `shared`, \
-                     `event_driver`, `name`",
+                     `event_driver`, `name`, `crate`",
                 ))
             }
         });
@@ -72,12 +75,13 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     // because this proc macro cannot see which features of `factories_actor`
     // are enabled - the feature-gated aliases respectively the template impl
     // can.
-    let defaults = quote!(::factories_actor::runtime::defaults);
+    let krate = util::krate_path(config.crate_path.as_ref());
+    let defaults = quote!(#krate::runtime::defaults);
     let (channel_default, error_default, binder_default, lock_default, run_loop_default) =
         match &config.template {
             Some(template) => {
                 let template =
-                    quote!(<#template as ::factories_actor::runtime::template::ActorTemplate>);
+                    quote!(<#template as #krate::runtime::template::ActorTemplate>);
                 (
                     quote!(#template::Channel),
                     quote!(#template::Error),
@@ -129,7 +133,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 #[derive(::core::clone::Clone, ::core::fmt::Debug)]
                 #vis struct #loop_ident;
             };
-            let items = generated_event_loop(ident, &loop_ident);
+            let items = generated_event_loop(ident, &loop_ident, &krate);
             (loop_ident.into_token_stream(), decl, items)
         }
     };
@@ -138,13 +142,13 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     // `const _` block) so it is nameable, and inherits the actor's visibility.
     // It is the actor's `TypedHandle`, and `#[messages]` adds the per-message
     // methods to it as inherent impls.
-    let lifecycle_hooks = generated_lifecycle_hooks(ident);
+    let lifecycle_hooks = generated_lifecycle_hooks(ident, &krate);
 
     let handle_ident = format_ident!("{}Handle", ident);
-    let handle_ty = quote!(::factories_actor::actor::handle::TypedActorHandle<#ident>);
+    let handle_ty = quote!(#krate::actor::handle::TypedActorHandle<#ident>);
     let handle_doc = format!(
         "Typed handle for the [`{ident}`] actor, returned when it is spawned.\n\n\
-         Derefs to [`TypedActorHandle`](::factories_actor::actor::handle::TypedActorHandle); \
+         Derefs to [`TypedActorHandle`](::factories::actor::handle::TypedActorHandle); \
          the per-message methods are added by `#[messages]`."
     );
 
@@ -176,22 +180,32 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
             }
         }
 
+        // Lets this handle be erased into a protocol's handle via `From`/`.into()`,
+        // and join the `ActorHandle` surface, by exposing the typed handle it wraps.
+        impl #krate::actor::handle::DerivedHandle for #handle_ident {
+            type Actor = #ident;
+
+            fn into_typed_handle(self) -> #handle_ty {
+                self.0
+            }
+        }
+
         impl #handle_ident {
             /// Type-erase into a shared untyped handle (forwards to
-            /// [`TypedActorHandle::erase_type`](::factories_actor::actor::handle::TypedActorHandle::erase_type)).
-            pub fn erase_type(self) -> ::factories_actor::actor::handle::AnyActorHandle
+            /// [`TypedActorHandle::erase_type`](::factories::actor::handle::TypedActorHandle::erase_type)).
+            pub fn erase_type(self) -> #krate::actor::handle::AnyActorHandle
             where
-                <#ident as ::factories_actor::actor::Actor>::Channel:
+                <#ident as #krate::actor::Actor>::Channel:
                     ::core::marker::Send + ::core::marker::Sync,
-                <#ident as ::factories_actor::actor::Actor>::Error:
+                <#ident as #krate::actor::Actor>::Error:
                     ::core::marker::Send + ::core::marker::Sync,
             {
                 self.0.erase_type()
             }
 
             /// Type-erase into a local untyped handle (forwards to
-            /// [`TypedActorHandle::erase_type_local`](::factories_actor::actor::handle::TypedActorHandle::erase_type_local)).
-            pub fn erase_type_local(self) -> ::factories_actor::actor::handle::AnyLocalActorHandle {
+            /// [`TypedActorHandle::erase_type_local`](::factories::actor::handle::TypedActorHandle::erase_type_local)).
+            pub fn erase_type_local(self) -> #krate::actor::handle::AnyLocalActorHandle {
                 self.0.erase_type_local()
             }
         }
@@ -199,12 +213,12 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
         #event_loop_decl
 
         const _: () = {
-            ::factories_actor::declare_actor_rtti!(__DERIVED_ACTOR_RTTI, #ident, #rtti_name);
+            #krate::declare_actor_rtti!(__DERIVED_ACTOR_RTTI, #ident, #rtti_name);
 
             #event_loop_items
 
-            unsafe impl ::factories_actor::actor::Actor for #ident {
-                const RTTI: &'static ::factories_actor::actor::rtti::ActorRtti =
+            unsafe impl #krate::actor::Actor for #ident {
+                const RTTI: &'static #krate::actor::rtti::ActorRtti =
                     __DERIVED_ACTOR_RTTI;
 
                 type Channel = #channel;
@@ -231,13 +245,13 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
 /// reducing the hook to a plain function pointer inside the matched arm (where the
 /// bound is known) and applying it where the context is concrete. With no such
 /// impl the fallback arm yields no work, exactly like the default.
-fn generated_lifecycle_hooks(ident: &Ident) -> TokenStream {
-    let actor = quote!(::factories_actor::actor::Actor);
-    let run_loop = quote!(::factories_actor::actor::ActorRunLoop);
-    let lifecycle = quote!(::factories_actor::actor::lifecycle);
-    let work = quote!(::factories_actor::actor::work);
-    let context = quote!(::factories_actor::actor::ActorContext);
-    let specialize = quote!(::factories_actor::factories_rtti::_imp::match_specialize);
+fn generated_lifecycle_hooks(ident: &Ident, krate: &TokenStream) -> TokenStream {
+    let actor = quote!(#krate::actor::Actor);
+    let run_loop = quote!(#krate::actor::ActorRunLoop);
+    let lifecycle = quote!(#krate::actor::lifecycle);
+    let work = quote!(#krate::actor::work);
+    let context = quote!(#krate::actor::ActorContext);
+    let specialize = quote!(#krate::factories_rtti::_imp::match_specialize);
     let converter = quote!(<<Self as #actor>::RunLoop as #run_loop<Self>>::WorkConverter);
     let into_work_ty = quote!(impl #work::IntoRunLoopWork<#converter>);
     let empty = quote!(<#converter as #work::WorkConverter>::empty());
@@ -301,12 +315,12 @@ fn generated_lifecycle_hooks(ident: &Ident) -> TokenStream {
 /// resolution only fires once `Self` is a known type, so it cannot live behind a
 /// generic helper. The two `__Via*` traits and the `__Probe` carrier are nested
 /// inside `next` so they never leak into the actor's namespace.
-fn generated_event_loop(ident: &Ident, loop_ident: &Ident) -> TokenStream {
-    let dispatched = quote!(::factories_actor::actor::dispatch::DispatchedActorMessage);
-    let event_context = quote!(::factories_actor::actor::event::EventContext);
-    let mailbox = quote!(::factories_actor::spawn::ActorMailbox);
-    let event_source = quote!(::factories_actor::actor::event::ActorEventSource);
-    let actor = quote!(::factories_actor::actor::Actor);
+fn generated_event_loop(ident: &Ident, loop_ident: &Ident, krate: &TokenStream) -> TokenStream {
+    let dispatched = quote!(#krate::actor::dispatch::DispatchedActorMessage);
+    let event_context = quote!(#krate::actor::event::EventContext);
+    let mailbox = quote!(#krate::spawn::ActorMailbox);
+    let event_source = quote!(#krate::actor::event::ActorEventSource);
+    let actor = quote!(#krate::actor::Actor);
     let send = quote!(::core::marker::Send);
     let output = quote!(::core::option::Option<#dispatched>);
     let future = quote!(::core::future::Future<Output = #output>);
@@ -324,7 +338,7 @@ fn generated_event_loop(ident: &Ident, loop_ident: &Ident) -> TokenStream {
             }
         }
 
-        impl<__M> ::factories_actor::actor::event::EventDriver<#ident, __M> for #loop_ident
+        impl<__M> #krate::actor::event::EventDriver<#ident, __M> for #loop_ident
         where
             __M: #mailbox + ::core::marker::Send,
         {

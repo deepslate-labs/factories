@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-factories_actor = { workspace = true, features = ["full-runtime", "derive"] }
+factories = { workspace = true, features = ["full-runtime", "derive"] }
 # tracing OFF to match factories (whose tracing feature is off). kameo defaults
 # to tracing on (per-actor lifecycle span + per-message caller span); keeping it
 # on would measure kameo's instrumentation, not its dispatch.

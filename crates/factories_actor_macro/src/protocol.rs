@@ -5,8 +5,11 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::{FnArg, Ident, ItemTrait, Pat, ReturnType, TraitItem, Type};
+
+use crate::util;
 
 /// Whether the protocol's erased handle is `Send + Sync` (wraps an
 /// `AnyActorHandle`) or thread-local (wraps an `AnyLocalActorHandle`).
@@ -26,7 +29,7 @@ struct ProtocolMessage {
 }
 
 pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
-    let locality = parse_locality(&attrs);
+    let (locality, krate) = parse_attrs(&attrs);
 
     // Always emit the trait unchanged on a hard error, so downstream code that
     // names the trait still resolves while diagnostics surface.
@@ -72,9 +75,9 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
         quote!(: #supertraits)
     };
 
-    let handle = quote!(::factories_actor::actor::handle);
-    let actor = quote!(::factories_actor::actor);
-    let message = quote!(::factories_actor::message::Message);
+    let handle = quote!(#krate::actor::handle);
+    let actor = quote!(#krate::actor);
+    let message = quote!(#krate::message::Message);
 
     // Per-message fragments. Trait declarations need the trailing `;`; the impls
     // carry a body instead. The return type is `MessageCall<impl Calling<…>>` -
@@ -119,17 +122,19 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
         Locality::Local => quote!(#handle::AnyLocalActorHandle),
     };
 
-    // `From<TypedActorHandle<A>>`: infallible, table from each `M::DISPATCHER`.
+    // `From<H: DerivedHandle>`: infallible, accepts either a bare typed handle
+    // or the derive's generated `…Handle` newtype. Table from each `M::DISPATCHER`.
+    let actor_ty = quote!(<__H as #handle::DerivedHandle>::Actor);
     let from_dispatchers = messages.iter().map(|m| {
         let msg = &m.message;
-        quote!(<__A as #actor::MessageHandler<#msg>>::DISPATCHER.into_dispatcher())
+        quote!(<#actor_ty as #actor::MessageHandler<#msg>>::DISPATCHER.into_dispatcher())
     });
     let (erase, send_sync_bounds) = match locality {
         Locality::Shared => (
             quote!(erase_type),
             quote!(
-                <__A as #actor::Actor>::Channel: ::core::marker::Send + ::core::marker::Sync,
-                <__A as #actor::Actor>::Error: ::core::marker::Send + ::core::marker::Sync,
+                <#actor_ty as #actor::Actor>::Channel: ::core::marker::Send + ::core::marker::Sync,
+                <#actor_ty as #actor::Actor>::Error: ::core::marker::Send + ::core::marker::Sync,
             ),
         ),
         Locality::Local => (quote!(erase_type_local), TokenStream::new()),
@@ -152,8 +157,10 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let handle_doc = format!(
         "Erased handle for the [`{trait_ident}`] protocol: any actor speaking it, \
          with the actor type erased but the message set guaranteed.\n\n\
-         Build one infallibly from a typed handle (`From`) or fallibly from an \
-         [`AnyActorHandle`](::factories_actor::actor::handle::AnyActorHandle) (`TryFrom`)."
+         Build one infallibly from a typed handle (`From`/`.into()` - either a bare \
+         [`TypedActorHandle`](::factories::actor::handle::TypedActorHandle) or the \
+         derive's generated `…Handle`), or fallibly from an erased \
+         [`AnyActorHandle`](::factories::actor::handle::AnyActorHandle) via `try_bind`."
     );
 
     quote! {
@@ -179,12 +186,14 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             dispatchers: [#actor::dispatch::ActorMessageDispatcher; #table_len],
         }
 
-        impl<__A> ::core::convert::From<#handle::TypedActorHandle<__A>> for #handle_ident
+        impl<__H> ::core::convert::From<__H> for #handle_ident
         where
-            __A: #actor::Actor #(+ #handler_bounds)*,
+            __H: #handle::DerivedHandle,
+            #actor_ty: #actor::Actor #(+ #handler_bounds)*,
             #send_sync_bounds
         {
-            fn from(__handle: #handle::TypedActorHandle<__A>) -> Self {
+            fn from(__handle: __H) -> Self {
+                let __handle = #handle::DerivedHandle::into_typed_handle(__handle);
                 Self {
                     dispatchers: [ #(#from_dispatchers),* ],
                     inner: __handle.#erase(),
@@ -192,10 +201,16 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             }
         }
 
-        impl ::core::convert::TryFrom<#inner_ty> for #handle_ident {
-            type Error = #inner_ty;
-
-            fn try_from(__any: #inner_ty) -> ::core::result::Result<Self, #inner_ty> {
+        impl #handle_ident {
+            /// Bind this protocol against an erased handle, verifying every
+            /// protocol message resolves on the actor behind it. Returns the
+            /// original handle unchanged on failure.
+            ///
+            /// (The fallible counterpart to the infallible `From`/`.into()` from a
+            /// typed handle - it cannot be `TryFrom` because the blanket `From`
+            /// above already occupies that conversion through the standard
+            /// library's `From`/`TryFrom` bridge.)
+            pub fn try_bind(__any: #inner_ty) -> ::core::result::Result<Self, #inner_ty> {
                 #(#bind_lets)*
                 ::core::result::Result::Ok(Self {
                     inner: __any,
@@ -210,30 +225,34 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     }
 }
 
-/// Parse the attribute arguments: empty (shared) or `local`.
-fn parse_locality(attrs: &TokenStream) -> Locality {
-    if attrs.is_empty() {
-        return Locality::Shared;
+/// Parse the attribute arguments: `local` (a thread-local handle) and/or
+/// `crate = "..."` (the crate root the generated code refers back through),
+/// in any order. Empty means a shared handle through the `factories` facade.
+fn parse_attrs(attrs: &TokenStream) -> (Locality, TokenStream) {
+    let mut locality = Locality::Shared;
+    let mut crate_override = None;
+
+    if !attrs.is_empty() {
+        let parser = syn::meta::parser(|meta| {
+            if meta.path.is_ident("local") {
+                locality = Locality::Local;
+                Ok(())
+            } else if meta.path.is_ident("crate") {
+                crate_override = Some(meta.value()?.parse::<syn::LitStr>()?);
+                Ok(())
+            } else {
+                Err(meta.error(
+                    "unknown #[protocol] argument, expected `local` and/or `crate = \"...\"`",
+                ))
+            }
+        });
+
+        if let Err(error) = parser.parse2(attrs.clone()) {
+            util::emit_syn_error(error);
+        }
     }
 
-    match syn::parse2::<Ident>(attrs.clone()) {
-        Ok(ident) if ident == "local" => Locality::Local,
-        Ok(ident) => {
-            proc_macro_error::emit_error!(
-                ident.span(),
-                "unknown #[protocol] argument `{}`, expected `local` or nothing",
-                ident
-            );
-            Locality::Shared
-        }
-        Err(_) => {
-            proc_macro_error::emit_error!(
-                attrs.span(),
-                "#[protocol] takes at most one argument: `local`"
-            );
-            Locality::Shared
-        }
-    }
+    (locality, util::krate_path(crate_override.as_ref()))
 }
 
 /// Collect and validate the protocol's messages from the trait's methods.

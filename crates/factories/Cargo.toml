@@ -1,0 +1,37 @@
+[package]
+name = "factories"
+version = "0.1.0"
+edition = "2024"
+description = "An explicit, zero-overhead actor framework for Rust."
+
+[features]
+# Batteries included: the derive macros plus the full tokio-backed runtime.
+default = ["derive", "full-runtime"]
+
+# `#[derive(Actor)]`, `#[derive(Message)]`, `#[messages]`, `#[protocol]`.
+derive = ["factories_actor/derive"]
+
+# The full tokio-backed runtime: answers, channel + spawner, locks, and the
+# dynamic-dispatch registry.
+full-runtime = ["tokio-answer", "tokio-runtime", "tokio-lock", "dynamic-dispatch"]
+
+# Request/response answers (`ask`/`call`), backed by `tokio::sync::oneshot`.
+tokio-answer = ["factories_actor/tokio-answer"]
+# Lock strategies backed by tokio's async sync primitives (no runtime needed).
+tokio-lock = ["factories_actor/tokio-lock"]
+# The default actor channel and task spawner (tokio mpsc mailbox + tokio rt).
+tokio-runtime = ["factories_actor/tokio-runtime"]
+# Diagnostic spans.
+tracing = ["factories_actor/tracing"]
+# Global dynamic-dispatch registry: handlers registered at binary load.
+dynamic-dispatch = ["factories_actor/dynamic-dispatch"]
+
+[dependencies]
+factories_actor = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = { workspace = true, features = ["std", "async-await"] }
+# Tests/doctests run on std targets; provide the critical-section implementation
+# the no_std `once_cell` configuration expects the final binary to supply.
+critical-section = { version = "1", features = ["std"] }

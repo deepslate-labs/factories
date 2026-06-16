@@ -10,13 +10,13 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use factories_actor::actor::dispatch::DispatchedActorMessage;
-use factories_actor::actor::event::{EventContext, EventDriver};
-use factories_actor::actor::{Actor, ActorContext};
-use factories_actor::runtime::lock::UnguardedLock;
-use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::{ActorLauncher, ActorMailbox};
+use factories::actor::dispatch::DispatchedActorMessage;
+use factories::actor::event::{EventContext, EventDriver};
+use factories::actor::{Actor, ActorContext};
+use factories::runtime::lock::UnguardedLock;
+use factories::runtime::sequential_loop::SequentialRunLoop;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::{ActorLauncher, ActorMailbox};
 
 use crate::util::assert_type_eq;
 
@@ -37,7 +37,7 @@ struct Ticker {
     total: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Ticker {
     /// The event source: fire `Tick` self-messages until the handler has
     /// processed the budget (read through the shared counter), then defer to
@@ -119,7 +119,7 @@ struct Beacon {
     pings: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Beacon {
     #[handler]
     async fn ping(&mut self) {

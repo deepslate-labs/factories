@@ -6,7 +6,7 @@
 
 use std::env;
 
-use factories_actor::actor::channel::ActorChannelSendable;
+use factories::actor::channel::ActorChannelSendable;
 use factories_benchmarks::{fac, fac_seq, kam};
 
 fn main() {

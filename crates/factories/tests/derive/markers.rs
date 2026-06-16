@@ -1,15 +1,15 @@
 //! Parameter markers: deferred answers (`#[answer]`), whole-message
 //! passthrough (`#[message]`) and sealed envelope forwarding (`#[envelope]`).
 
-use factories_actor::actor::channel::ActorChannelSendable;
-use factories_actor::actor::handle::{ActorHandle, AnyActorHandle};
-use factories_actor::actor::{Actor, StaticOnlyBinder};
-use factories_actor::message::channel::{AnswerSender, answer_channel};
-use factories_actor::message::envelope::{MessageEnvelope, SendableEnvelope};
-use factories_actor::runtime::lock::UnguardedLock;
-use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::channel::ActorChannelSendable;
+use factories::actor::handle::{ActorHandle, AnyActorHandle};
+use factories::actor::{Actor, StaticOnlyBinder};
+use factories::message::channel::{AnswerSender, answer_channel};
+use factories::message::envelope::{MessageEnvelope, SendableEnvelope};
+use factories::runtime::lock::UnguardedLock;
+use factories::runtime::sequential_loop::SequentialRunLoop;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 use crate::actor::Defaulted;
 use crate::handlers::{AddBoth, Probe};
@@ -20,7 +20,7 @@ struct Deferring {
     pending: Option<AnswerSender<Defer>>,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Deferring {
     /// Manual answering: stash the sender, answer on `Release`. No return
     /// type to infer the answer type from, hence the `answer` key.
@@ -49,7 +49,7 @@ struct Relay {
     target: AnyActorHandle,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Relay {
     /// Forward the sealed envelope - the answer sender travels inside, so the
     /// target answers the original asker directly. `SendableEnvelope` (not

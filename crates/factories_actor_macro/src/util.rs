@@ -67,3 +67,21 @@ pub fn rtti_name(explicit: Option<LitStr>, ident: &Ident) -> TokenStream {
         None => quote!(::core::stringify!(#ident)),
     }
 }
+
+/// The crate root the generated code refers back through.
+///
+/// Defaults to the `factories` facade, which re-exports the whole runtime; the
+/// `crate = "..."` key overrides it (serde-style) for code that depends on a
+/// renamed or re-exported facade.
+pub fn krate_path(explicit: Option<&LitStr>) -> TokenStream {
+    match explicit {
+        Some(lit) => match lit.parse::<syn::Path>() {
+            Ok(path) => quote!(#path),
+            Err(error) => {
+                proc_macro_error::emit_error!(lit.span(), "invalid `crate` path: {}", error);
+                quote!(::factories)
+            }
+        },
+        None => quote!(::factories),
+    }
+}

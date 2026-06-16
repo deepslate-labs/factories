@@ -1,13 +1,13 @@
 //! Dispatch-path comparison. Each iteration pushes a batch of `tell`s through
-//! the mailbox and then drains with a single `ask` (a FIFO barrier — once the
+//! the mailbox and then drains with a single `ask` (a FIFO barrier - once the
 //! ask returns, every preceding message has been handled). Reported per-element
 //! so the number is the amortized cost of getting one message dispatched and
 //! handled.
 //!
 //! Three paths:
-//! - `factories/static`  — typed handle, sender-side devirtualized dispatch
-//! - `factories/dynamic` — type-erased handle, the registry-lookup dispatch
-//! - `kameo`             — kameo's typed `tell`/`ask`
+//! - `factories/static`  - typed handle, sender-side devirtualized dispatch
+//! - `factories/dynamic` - type-erased handle, the registry-lookup dispatch
+//! - `kameo`             - kameo's typed `tell`/`ask`
 //!
 //! All three use a bounded(64) mailbox, so backpressure is part of the cost on
 //! every contender equally.
@@ -15,9 +15,9 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use factories_actor::actor::channel::ActorChannelSendable;
-use factories_actor::actor::handle::ActorHandle;
-use factories_actor::message::envelope::MessageEnvelope;
+use factories::actor::channel::ActorChannelSendable;
+use factories::actor::handle::ActorHandle;
+use factories::message::envelope::MessageEnvelope;
 use factories_benchmarks::{fac, kam, runtime};
 
 const BATCH: u64 = 1000;
@@ -27,7 +27,7 @@ fn dispatch(c: &mut Criterion) {
     let mut group = c.benchmark_group("dispatch");
     group.throughput(Throughput::Elements(BATCH));
 
-    // factories — static typed-handle path.
+    // factories - static typed-handle path.
     let stat = rt.block_on(fac::spawn(0));
     group.bench_function("factories/static", |b| {
         b.to_async(&rt).iter(|| async {
@@ -38,7 +38,7 @@ fn dispatch(c: &mut Criterion) {
         });
     });
 
-    // factories — type-erased dynamic path (registry lookup per send).
+    // factories - type-erased dynamic path (registry lookup per send).
     let typed = rt.block_on(fac::spawn(0));
     let erased = typed.clone().erase_type();
     group.bench_function("factories/dynamic", |b| {
@@ -56,7 +56,7 @@ fn dispatch(c: &mut Criterion) {
         });
     });
 
-    // kameo — typed path.
+    // kameo - typed path.
     let kam_handle = rt.block_on(async { kam::spawn(0) });
     group.bench_function("kameo", |b| {
         b.to_async(&rt).iter(|| async {

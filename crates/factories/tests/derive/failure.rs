@@ -1,13 +1,13 @@
 //! Actor failure from handlers: `die_on_err` (forward and consume modes) and
 //! manual failing through `#[context]`.
 
-use factories_actor::actor::channel::ActorChannelSendable;
-use factories_actor::actor::state::{LifecycleState, SharedActorState};
-use factories_actor::actor::{Actor, ActorContext};
-use factories_actor::runtime::lock::UnguardedLock;
-use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::channel::ActorChannelSendable;
+use factories::actor::state::{LifecycleState, SharedActorState};
+use factories::actor::{Actor, ActorContext};
+use factories::runtime::lock::UnguardedLock;
+use factories::runtime::sequential_loop::SequentialRunLoop;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Boom(u32);
@@ -18,7 +18,7 @@ struct Fragile {
     limit: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl Fragile {
     /// Forward mode: the asker receives the full result, the actor dying is
     /// a side effect of the error.
@@ -50,7 +50,7 @@ struct FragileConcurrent {
     limit: u32,
 }
 
-#[factories_actor::messages]
+#[factories::messages]
 impl FragileConcurrent {
     #[handler(die_on_err)]
     fn deplete(&mut self, value: u32) -> Result<u32, Boom> {

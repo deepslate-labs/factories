@@ -6,7 +6,7 @@
 //! the default mailbox switched to the cancellation-safe `tokio::sync::mpsc`, it
 //! passes.
 
-use factories_actor::actor::channel::ActorChannelSendable;
+use factories::actor::channel::ActorChannelSendable;
 use factories_benchmarks::{fac, fac_seq, kam};
 
 const N: u64 = 200_000;

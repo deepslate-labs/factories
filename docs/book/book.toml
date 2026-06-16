@@ -1,0 +1,11 @@
+[book]
+title = "The factories Book"
+authors = ["Janrupf"]
+language = "en"
+src = "src"
+description = "A guide to the factories actor framework for Rust."
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+no-section-label = false

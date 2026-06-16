@@ -3,15 +3,15 @@
 //!
 //! `Defaulted` and `Customized` double as fixtures for the other modules.
 
-use factories_actor::actor::{Actor, MessageHandlerContext, StaticOnlyBinder};
-use factories_actor::implement_message_handler;
-use factories_actor::message::Message;
-use factories_actor::runtime::lock::{self, UnguardedLock};
-use factories_actor::runtime::registry::RegistryBinder;
-use factories_actor::runtime::sequential_loop::SequentialRunLoop;
-use factories_actor::runtime::tokio::TokioMpscActorChannel;
-use factories_actor::runtime::tokio::TokioTaskSpawner;
-use factories_actor::spawn::ActorLauncher;
+use factories::actor::{Actor, MessageHandlerContext, StaticOnlyBinder};
+use factories::implement_message_handler;
+use factories::message::Message;
+use factories::runtime::lock::{self, UnguardedLock};
+use factories::runtime::registry::RegistryBinder;
+use factories::runtime::sequential_loop::SequentialRunLoop;
+use factories::runtime::tokio::TokioMpscActorChannel;
+use factories::runtime::tokio::TokioTaskSpawner;
+use factories::spawn::ActorLauncher;
 
 use crate::util::assert_type_eq;
 

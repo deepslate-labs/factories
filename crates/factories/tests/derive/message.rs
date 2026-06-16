@@ -1,6 +1,6 @@
 //! `#[derive(Message)]`: answer types and RTTI names.
 
-use factories_actor::message::Message;
+use factories::message::Message;
 
 use crate::actor::{Get, Hit};
 use crate::util::assert_type_eq;

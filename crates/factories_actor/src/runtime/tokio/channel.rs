@@ -1,4 +1,4 @@
-//! Tokio-`mpsc`-backed actor channel — the default mailbox.
+//! Tokio-`mpsc`-backed actor channel - the default mailbox.
 //!
 //! This is the standard single-lane actor channel. It is backed by
 //! [`tokio::sync::mpsc`], whose `recv` future is cancellation-safe: it can be

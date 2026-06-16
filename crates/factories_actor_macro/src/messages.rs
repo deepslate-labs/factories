@@ -1,5 +1,6 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::{
     Attribute, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Pat, PathArguments, ReturnType,
@@ -86,9 +87,24 @@ enum ParamBinding {
 const PARAM_MARKERS: &[&str] = &["answer", "message", "envelope", "context"];
 
 pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
+    // The only argument is the serde-style `crate = "..."` override, naming the
+    // crate root the generated code refers back through (the `factories` facade
+    // by default).
+    let mut crate_override: Option<syn::LitStr> = None;
     if !attrs.is_empty() {
-        proc_macro_error::emit_error!(attrs.span(), "#[messages] takes no arguments");
+        let parser = syn::meta::parser(|meta| {
+            if meta.path.is_ident("crate") {
+                crate_override = Some(meta.value()?.parse::<syn::LitStr>()?);
+                Ok(())
+            } else {
+                Err(meta.error("#[messages] only accepts `crate = \"...\"`"))
+            }
+        });
+        if let Err(error) = parser.parse2(attrs.clone()) {
+            util::emit_syn_error(error);
+        }
     }
+    let krate = util::krate_path(crate_override.as_ref());
 
     // Strip the `#[handler]` markers first: this keeps the dummy output (used
     // in place of the real expansion when diagnostics are emitted) free of
@@ -244,7 +260,7 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     let mut generated = TokenStream::new();
     let mut methods = Vec::new();
     for (function, markers) in &handlers {
-        if let Some(expansion) = expand_handler(self_ty, function, markers) {
+        if let Some(expansion) = expand_handler(self_ty, function, markers, &krate) {
             generated.extend(expansion.items);
             methods.push(expansion.method);
         }
@@ -259,7 +275,7 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
         );
     }
     for function in &event_sources {
-        if let Some(expansion) = expand_event_source(self_ty, function) {
+        if let Some(expansion) = expand_event_source(self_ty, function, &krate) {
             generated.extend(expansion);
         }
     }
@@ -278,6 +294,7 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
             function,
             Hook::Start,
             *die_on_err,
+            &krate,
         ));
     }
     if let Some((extra, _)) = on_stops.get(1) {
@@ -292,6 +309,7 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
             function,
             Hook::Stop,
             *die_on_err,
+            &krate,
         ));
     }
 
@@ -301,7 +319,7 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     // else this macro emits.
     let typed_handle_methods = match handle_type(self_ty) {
         Some(handle_ty) if !methods.is_empty() => quote! {
-            ::factories_actor::typed_handle_methods_if_enabled! {
+            #krate::typed_handle_methods_if_enabled! {
                 impl #handle_ty {
                     #(#methods)*
                 }
@@ -365,6 +383,7 @@ fn expand_lifecycle_hook(
     function: &ImplItemFn,
     hook: Hook,
     die_on_err: bool,
+    krate: &TokenStream,
 ) -> TokenStream {
     let signature = &function.sig;
 
@@ -400,13 +419,13 @@ fn expand_lifecycle_hook(
     let mut renamed = function.clone();
     renamed.sig.ident = mangled.clone();
 
-    let lifecycle = quote!(::factories_actor::actor::lifecycle);
-    let work = quote!(::factories_actor::actor::work);
-    let context = quote!(::factories_actor::actor::ActorContext);
-    let result = quote!(::factories_actor::runtime::result::ResultLike);
+    let lifecycle = quote!(#krate::actor::lifecycle);
+    let work = quote!(#krate::actor::work);
+    let context = quote!(#krate::actor::ActorContext);
+    let result = quote!(#krate::runtime::result::ResultLike);
     let converter = quote!(
-        <<Self as ::factories_actor::actor::Actor>::RunLoop
-            as ::factories_actor::actor::ActorRunLoop<Self>>::WorkConverter
+        <<Self as #krate::actor::Actor>::RunLoop
+            as #krate::actor::ActorRunLoop<Self>>::WorkConverter
     );
 
     // The call into the renamed inherent method, forwarding the hook's params.
@@ -496,7 +515,11 @@ fn parse_hook_die_on_err(attr: &Attribute, hook: &str) -> bool {
 /// `Option<DispatchedActorMessage>` - and a wrong shape surfaces as a normal
 /// trait-mismatch error on their method. The validations here only sharpen the
 /// diagnostics for the likely slips (a stray `self`, a missing `async`).
-fn expand_event_source(self_ty: &Type, function: &ImplItemFn) -> Option<TokenStream> {
+fn expand_event_source(
+    self_ty: &Type,
+    function: &ImplItemFn,
+    krate: &TokenStream,
+) -> Option<TokenStream> {
     let signature = &function.sig;
 
     if !signature.generics.params.is_empty() || signature.generics.where_clause.is_some() {
@@ -538,7 +561,7 @@ fn expand_event_source(self_ty: &Type, function: &ImplItemFn) -> Option<TokenStr
     next_event.sig.ident = Ident::new("next_event", function.sig.ident.span());
 
     Some(quote! {
-        impl ::factories_actor::actor::event::ActorEventSource for #self_ty {
+        impl #krate::actor::event::ActorEventSource for #self_ty {
             #next_event
         }
     })
@@ -548,6 +571,7 @@ fn expand_handler(
     self_ty: &Type,
     function: &ImplItemFn,
     markers: &[Attribute],
+    krate: &TokenStream,
 ) -> Option<HandlerExpansion> {
     let mut config = HandlerConfig::default();
     for attr in markers {
@@ -818,7 +842,7 @@ fn expand_handler(
             ReturnType::Default => quote!(()),
             ReturnType::Type(_, ty) => match config.die_on_err {
                 Some((DieMode::Consume, _)) => {
-                    quote!(<#ty as ::factories_actor::runtime::result::ResultLike>::Ok)
+                    quote!(<#ty as #krate::runtime::result::ResultLike>::Ok)
                 }
                 _ => ty.to_token_stream(),
             },
@@ -858,7 +882,7 @@ fn expand_handler(
 
             let rtti_name = quote!(::core::stringify!(#message_ident));
             let message_impl =
-                crate::message::implement_message(&message_ident, &answer, &rtti_name);
+                crate::message::implement_message(&message_ident, &answer, &rtti_name, krate);
 
             let destructure = if field_idents.is_empty() {
                 TokenStream::new()
@@ -875,9 +899,9 @@ fn expand_handler(
     };
 
     let access = if exclusive {
-        quote!(::factories_actor::runtime::lock::Exclusive)
+        quote!(#krate::runtime::lock::Exclusive)
     } else {
-        quote!(::factories_actor::runtime::lock::Shared)
+        quote!(#krate::runtime::lock::Shared)
     };
 
     let guard = if exclusive {
@@ -916,7 +940,7 @@ fn expand_handler(
         quote! {
             #context_prologue
             let (#guard, envelope) = ctx.into_parts_with_envelope();
-            let envelope = match ::factories_actor::message::envelope::SendableEnvelope::try_from_envelope(envelope) {
+            let envelope = match #krate::message::envelope::SendableEnvelope::try_from_envelope(envelope) {
                 ::core::result::Result::Ok(envelope) => envelope,
                 ::core::result::Result::Err(_) => ::core::unreachable!(
                     "#[envelope] handlers receive a SendableEnvelope, but the dispatched envelope is not sendable"
@@ -945,7 +969,7 @@ fn expand_handler(
                 Some((DieMode::Forward, _)) => quote! {
                     let result = #call;
                     if let ::core::result::Result::Err(error) =
-                        ::factories_actor::runtime::result::ResultLike::as_result(&result)
+                        #krate::runtime::result::ResultLike::as_result(&result)
                     {
                         actor_context.fail(::core::convert::Into::into(
                             ::core::clone::Clone::clone(error),
@@ -957,7 +981,7 @@ fn expand_handler(
                 },
                 // The death consumes the error; the answer is the Ok part.
                 Some((DieMode::Consume, _)) => quote! {
-                    match ::factories_actor::runtime::result::ResultLike::into_result(#call) {
+                    match #krate::runtime::result::ResultLike::into_result(#call) {
                         ::core::result::Result::Ok(value) => {
                             if let Some(answer) = answer {
                                 let _ = answer.send(value);
@@ -993,7 +1017,7 @@ fn expand_handler(
     let items = quote! {
         #message_decl
 
-        ::factories_actor::implement_message_handler! {
+        #krate::implement_message_handler! {
             impl MessageHandler<#message_ty> for #self_ty {
                 type AccessMode = #access;
 
@@ -1001,7 +1025,7 @@ fn expand_handler(
             }
         }
 
-        ::factories_actor::register_dynamic_handler_if_enabled!(#self_ty, #message_ty);
+        #krate::register_dynamic_handler_if_enabled!(#self_ty, #message_ty);
     };
 
     // The typed-handle method forwarding to this message. Caller-facing inputs
@@ -1011,8 +1035,8 @@ fn expand_handler(
     let vis = &function.vis;
     let method_answer = quote! {
         ::core::result::Result<
-            <#message_ty as ::factories_actor::message::Message>::Answer,
-            ::factories_actor::actor::handle::AskError,
+            <#message_ty as #krate::message::Message>::Answer,
+            #krate::actor::handle::AskError,
         >
     };
 
@@ -1034,8 +1058,8 @@ fn expand_handler(
         #vis fn #fn_ident(
             &self,
             #(#method_args),*
-        ) -> ::factories_actor::actor::handle::MessageCall<
-            impl ::factories_actor::actor::handle::Calling<Output = #method_answer> + use<'_>,
+        ) -> #krate::actor::handle::MessageCall<
+            impl #krate::actor::handle::Calling<Output = #method_answer> + use<'_>,
         > {
             self.call(#construct)
         }

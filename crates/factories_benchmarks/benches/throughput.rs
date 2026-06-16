@@ -3,14 +3,14 @@
 //! drains with a single `ask` barrier; reported per-element.
 //!
 //! The extra axis here is factories' loop strategy:
-//! - `factories/concurrent` — `ConcurrentRunLoop` + `TokioMutexLock` (default)
-//! - `factories/sequential` — `SequentialRunLoop` + `UnguardedLock` (lock-elided)
-//! - `kameo`                — for reference
+//! - `factories/concurrent` - `ConcurrentRunLoop` + `TokioMutexLock` (default)
+//! - `factories/sequential` - `SequentialRunLoop` + `UnguardedLock` (lock-elided)
+//! - `kameo`                - for reference
 
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use factories_actor::actor::channel::ActorChannelSendable;
+use factories::actor::channel::ActorChannelSendable;
 use factories_benchmarks::{fac, fac_seq, kam, runtime};
 
 const BATCH: u64 = 10_000;
