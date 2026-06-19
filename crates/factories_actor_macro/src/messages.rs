@@ -319,7 +319,7 @@ pub fn messages(attrs: TokenStream, mut input: ItemImpl) -> TokenStream {
     // else this macro emits.
     let typed_handle_methods = match handle_type(self_ty) {
         Some(handle_ty) if !methods.is_empty() => quote! {
-            #krate::typed_handle_methods_if_enabled! {
+            #krate::cfg_tokio_answer! {
                 impl #handle_ty {
                     #(#methods)*
                 }
@@ -1025,7 +1025,9 @@ fn expand_handler(
             }
         }
 
-        #krate::register_dynamic_handler_if_enabled!(#self_ty, #message_ty);
+        #krate::cfg_dynamic_dispatch! {
+            #krate::register_dynamic_handler!(#self_ty, #message_ty);
+        }
     };
 
     // The typed-handle method forwarding to this message. Caller-facing inputs

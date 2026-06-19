@@ -198,10 +198,6 @@ pub(crate) fn current_frame() -> Option<CaptureFrame> {
 /// Record the message being dispatched (if the mesh is captured) and wrap the
 /// handler future so that, while it runs, *this* actor is the current frame -
 /// so any send or spawn it makes is attributed to it and to this message.
-///
-/// Called by the dispatcher for each delivered message - the `#[messages]`-generated
-/// dispatcher reaches it through `capture_instrument_if_enabled!`; a hand-written
-/// dispatcher calls it directly.
 pub fn instrument_handler<A: Actor + ?Sized, F: Future<Output = ()>>(
     shared: &SharedActorState<A>,
     stamp: CaptureStamp,

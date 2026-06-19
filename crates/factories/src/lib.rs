@@ -137,9 +137,9 @@ pub use factories_actor::factories_collect;
 // root; re-export them here so `::factories::name!` resolves.
 #[doc(hidden)]
 pub use factories_actor::{
-    declare_actor_rtti, declare_message, declare_message_rtti,
-    declare_static_async_dispatcher, implement_message_handler,
-    register_dynamic_handler_if_enabled, typed_handle_methods_if_enabled,
+    cfg_capture, cfg_dynamic_dispatch, cfg_tokio_answer, declare_actor_rtti,
+    declare_message, declare_message_rtti, declare_static_async_dispatcher,
+    implement_message_handler,
 };
 
 #[cfg(feature = "dynamic-dispatch")]

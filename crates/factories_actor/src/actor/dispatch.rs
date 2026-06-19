@@ -192,9 +192,10 @@ macro_rules! declare_static_async_dispatcher {
                 // Grab the sender's stamp and this message's dispatch kind before
                 // the context is decomposed (so the capture path never touches the
                 // `!Send` envelope local). No-op without `capture`.
-                $crate::capture_grab_if_enabled!(
-                    message_context => __factories_cap_stamp, __factories_cap_dispatch
-                );
+                $crate::cfg_capture! {
+                    let __factories_cap_stamp = message_context.capture_stamp();
+                    let __factories_cap_dispatch = message_context.capture_dispatch();
+                }
 
                 let (envelope, span) = message_context.into_parts();
 
@@ -219,14 +220,15 @@ macro_rules! declare_static_async_dispatcher {
                 // Record this delivery and make this actor the current capture
                 // frame while the handler runs, so any send or spawn it makes is
                 // attributed to it and this message. No-op without `capture`.
-                $crate::capture_instrument_if_enabled!(
-                    work,
-                    $crate::actor::ActorRunLoopDispatchContext::shared_state(dispatch_context),
-                    $actor,
-                    __factories_cap_stamp,
-                    <$message as $crate::message::Message>::RTTI.name(),
-                    __factories_cap_dispatch
-                );
+                $crate::cfg_capture! {
+                    let work = $crate::capture::instrument_handler::<$actor, _>(
+                        $crate::actor::ActorRunLoopDispatchContext::shared_state(dispatch_context),
+                        __factories_cap_stamp,
+                        <$message as $crate::message::Message>::RTTI.name(),
+                        __factories_cap_dispatch,
+                        work,
+                    );
+                }
 
                 span.instrument(
                     <$actor as $crate::actor::Actor>::RTTI.name(),
@@ -266,46 +268,6 @@ macro_rules! declare_static_async_dispatcher {
 }
 
 pub use declare_static_async_dispatcher;
-
-/// Bind `$stamp` / `$dispatch` from the dispatch context (before it is decomposed)
-/// for a dispatcher's capture wiring.
-#[cfg(feature = "capture")]
-#[macro_export]
-macro_rules! capture_grab_if_enabled {
-    ($mc:ident => $stamp:ident, $dispatch:ident) => {
-        let $stamp = $mc.capture_stamp();
-        let $dispatch = $mc.capture_dispatch();
-    };
-}
-
-/// The `capture` feature is disabled, so this expands to nothing.
-#[cfg(not(feature = "capture"))]
-#[macro_export]
-macro_rules! capture_grab_if_enabled {
-    ($mc:ident => $stamp:ident, $dispatch:ident) => {};
-}
-
-/// Record this delivery as a captured edge and rebind `$work` so the handler runs
-/// as the current capture frame.
-#[cfg(feature = "capture")]
-#[macro_export]
-macro_rules! capture_instrument_if_enabled {
-    ($work:ident, $shared:expr, $actor:ty, $stamp:ident, $message:expr, $dispatch:ident) => {
-        let $work = $crate::capture::instrument_handler::<$actor, _>(
-            $shared, $stamp, $message, $dispatch, $work,
-        );
-    };
-}
-
-/// The `capture` feature is disabled, so this expands to nothing.
-#[cfg(not(feature = "capture"))]
-#[macro_export]
-macro_rules! capture_instrument_if_enabled {
-    ($work:ident, $shared:expr, $actor:ty, $stamp:ident, $message:expr, $dispatch:ident) => {};
-}
-
-pub use capture_grab_if_enabled;
-pub use capture_instrument_if_enabled;
 
 /// Implement [`MessageHandler`](crate::actor::MessageHandler) for an
 /// actor/message pair.

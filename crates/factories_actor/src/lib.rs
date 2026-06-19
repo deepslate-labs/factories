@@ -12,6 +12,10 @@ pub mod message;
 pub mod runtime;
 pub mod spawn;
 
+/// `cfg_<feature>! { … }` gating macros, usable inside the crate's exported macros
+/// (they expand downstream). Exported at the crate root via `#[macro_export]`.
+mod cfg;
+
 /// Internal `tracing` instrumentation helpers (no-ops without the feature).
 pub(crate) mod obs;
 
