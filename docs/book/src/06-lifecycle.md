@@ -83,10 +83,10 @@ let handle = ActorLauncher::default()
     .expect("hooked init is infallible");
 
 // `on_start` ran before `Running` became observable.
-assert_eq!(handle.state().extension().snapshot(), ["start"]);
+assert_eq!(handle.state().shared_data().snapshot(), ["start"]);
 
 handle.ping().await.expect("ask");
-assert_eq!(handle.state().extension().snapshot(), ["start", "ping"]);
+assert_eq!(handle.state().shared_data().snapshot(), ["start", "ping"]);
 ```
 
 ### `on_stop` takes `self` by value

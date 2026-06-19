@@ -176,7 +176,7 @@ unsafe impl Actor for Pinged {
     type LockStrategy = UnguardedLock<Pinged>;
     type RunLoop = SequentialRunLoop<Pinged>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 
     fn on_start<'a>(
@@ -231,7 +231,7 @@ unsafe impl Actor for Cycle {
     type LockStrategy = UnguardedLock<Cycle>;
     type RunLoop = SequentialRunLoop<Cycle>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -297,7 +297,7 @@ unsafe impl Actor for Watcher {
     type LockStrategy = UnguardedLock<Watcher>;
     type RunLoop = SequentialRunLoop<Watcher>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -356,7 +356,7 @@ unsafe impl Actor for Fragile {
     type LockStrategy = UnguardedLock<Fragile>;
     type RunLoop = SequentialRunLoop<Fragile>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -458,7 +458,7 @@ unsafe impl Actor for Doomed {
     type LockStrategy = UnguardedLock<Doomed>;
     type RunLoop = SequentialRunLoop<Doomed>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 

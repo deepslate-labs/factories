@@ -1,4 +1,5 @@
 use crate::actor::Actor;
+use crate::actor::extension::ExtensionSet;
 use crate::actor::lifecycle::{TerminationKind, TerminationReason};
 use crate::actor::supervision::{Subscription, ActorId};
 use crate::actor::task::ActorTaskHandle;
@@ -207,18 +208,23 @@ struct InnerSharedActorState<A: Actor + ?Sized> {
     // Late-bound: the run loop future captures the shared state *before* the
     // spawner produces the task handle, so the handle is attached post-spawn.
     task: OnceCell<ActorTaskHandle>,
-    extension: A::SharedStateExtension,
+    shared_data: A::SharedData,
+
+    // Type-erased, pointer-keyed context injected at spawn (see
+    // [`crate::actor::extension`]); frozen here, read-only for the actor's life.
+    extensions: ExtensionSet,
 }
 
 impl<A: Actor + ?Sized> InnerSharedActorState<A> {
-    fn new() -> Self {
+    fn new(extensions: ExtensionSet) -> Self {
         Self {
             id: ActorId::new(),
             reason: OnceCell::new(),
             lifecycle: LifecycleCell::new(),
             subscriptions: Mutex::new(RefCell::new(Vec::new())),
             task: OnceCell::new(),
-            extension: A::SharedStateExtension::default(),
+            shared_data: A::SharedData::default(),
+            extensions,
         }
     }
 }
@@ -226,7 +232,7 @@ impl<A: Actor + ?Sized> InnerSharedActorState<A> {
 impl<A: Actor + ?Sized> Debug for InnerSharedActorState<A>
 where
     A::Error: Debug,
-    A::SharedStateExtension: Debug,
+    A::SharedData: Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InnerSharedActorState")
@@ -234,7 +240,7 @@ where
             .field("reason", &self.reason)
             .field("lifecycle", &self.lifecycle)
             .field("task", &self.task)
-            .field("extension", &self.extension)
+            .field("shared_data", &self.shared_data)
             .finish()
     }
 }
@@ -245,9 +251,11 @@ pub struct SharedActorState<A: Actor + ?Sized> {
 }
 
 impl<A: Actor + ?Sized> SharedActorState<A> {
-    pub fn new() -> Self {
+    /// Create the shared state, seeding it with the extensions injected at spawn
+    /// (empty for an actor with none). The set is frozen here for the actor's life.
+    pub fn new(extensions: ExtensionSet) -> Self {
         Self {
-            inner: Arc::new(InnerSharedActorState::new()),
+            inner: Arc::new(InnerSharedActorState::new(extensions)),
         }
     }
 
@@ -371,10 +379,15 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
         self.inner.task.get()
     }
 
-    /// The actor's user-defined shared state extension
-    /// ([`Actor::SharedStateExtension`]).
-    pub fn extension(&self) -> &A::SharedStateExtension {
-        &self.inner.extension
+    /// The actor's user-defined shared data
+    /// ([`Actor::SharedData`]).
+    pub fn shared_data(&self) -> &A::SharedData {
+        &self.inner.shared_data
+    }
+
+    /// The set of type-erased extensions injected at spawn.
+    pub fn extensions(&self) -> &ExtensionSet {
+        &self.inner.extensions
     }
 
     /// The current lifecycle state of the actor.

@@ -140,7 +140,7 @@ impl Heartbeat {
         cx: EventContext<'_, Self>,
         mailbox: &mut (impl ActorMailbox + Send),
     ) -> Option<DispatchedActorMessage> {
-        if cx.extension().fired.load(Ordering::Acquire) < TICK_BUDGET {
+        if cx.shared_data().fired.load(Ordering::Acquire) < TICK_BUDGET {
             // A heartbeat interval. Short so the example finishes in a blink.
             tokio::time::sleep(Duration::from_millis(20)).await;
             return Some(cx.message(Tick));
@@ -152,7 +152,7 @@ impl Heartbeat {
     #[handler]
     async fn tick(&mut self, #[context] cx: ActorContext<'_, Self>) {
         self.beats += 1;
-        cx.extension().fired.fetch_add(1, Ordering::AcqRel);
+        cx.shared_data().fired.fetch_add(1, Ordering::AcqRel);
         println!("  tick! beat #{}", self.beats);
     }
 
@@ -168,7 +168,7 @@ it's below budget, it sleeps 20 ms, then returns `cx.message(Tick)` - a
 self-addressed `Tick`. The run loop dispatches it; the `tick` handler runs with
 the lock held, bumps `self.beats`, and bumps the shared `fired` so the *next*
 turn of the source sees one more tick has landed. (Both halves reach the shared
-extension the same way: the source through `cx.extension()`, the handler through
+extension the same way: the source through `cx.shared_data()`, the handler through
 its `ActorContext`'s `extension()`.) Once `fired` reaches `TICK_BUDGET`, the
 source falls through to `mailbox.receive().await` and the actor is reactive again
 - answering `beats()` asks promptly, starving nothing.

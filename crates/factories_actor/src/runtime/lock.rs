@@ -322,7 +322,7 @@ mod tests {
         type LockStrategy = UnguardedLock<LockActor>;
         type RunLoop = LockActorLoop;
         type TypedHandle = TypedActorHandle<Self>;
-        type SharedStateExtension = ();
+        type SharedData = ();
         type EventDriver = DefaultMailboxDriver;
     }
 

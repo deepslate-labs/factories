@@ -50,7 +50,7 @@ impl Cache {
     /// happen in parallel rather than one after another.
     #[handler]
     async fn lookup(&self, key: u32, #[context] cx: ActorContext<'_, Self>) -> Option<u64> {
-        let gauge = cx.extension();
+        let gauge = cx.shared_data();
         let now = gauge.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
         gauge.peak.fetch_max(now, Ordering::AcqRel);
 
@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("8 lookups returned {values:?} in {elapsed:?}");
 
     // The proof: how many lookups were ever in flight at once?
-    let peak = cache.state().extension().peak.load(Ordering::Acquire);
+    let peak = cache.state().shared_data().peak.load(Ordering::Acquire);
     println!("peak concurrent lookups: {peak}");
 
     // Each lookup sleeps 50ms. Serially that's ~400ms; overlapped it's ~50ms.

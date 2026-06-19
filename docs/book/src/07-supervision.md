@@ -81,7 +81,7 @@ impl Supervisor {
     ) {
         let (tag, kind) = (terminated.tag(), terminated.kind());
         println!("[supervisor] watched actor under tag {tag} left: {kind:?}");
-        cx.extension().record(tag, kind);
+        cx.shared_data().record(tag, kind);
     }
 }
 ```
@@ -99,7 +99,7 @@ Three pieces are worth naming:
   - `terminated.kind()` returns a `TerminationKind` describing *how* the actor
     left.
 - **`#[context] cx: ActorContext<'_, Self>`** gives the handler access to the
-  actor's own services. Here we use `cx.extension()` to reach the shared
+  actor's own services. Here we use `cx.shared_data()` to reach the shared
   `DeathLog` - but the context is also how a handler watches other actors, which
   we'll get to below. (Contexts were introduced in
   [State, Answers, and Errors](04-state-answers-errors.md).)

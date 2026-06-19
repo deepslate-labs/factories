@@ -131,11 +131,11 @@ impl<'a, A: Actor + ?Sized> EventContext<'a, A> {
         self.shared
     }
 
-    /// The actor's lock-free shared state extension
-    /// ([`Actor::SharedStateExtension`]) -
+    /// The actor's lock-free shared data
+    /// ([`Actor::SharedData`]) -
     /// the coordination channel shared with message handlers.
-    pub fn extension(&self) -> &'a A::SharedStateExtension {
-        self.shared.extension()
+    pub fn shared_data(&self) -> &'a A::SharedData {
+        self.shared.shared_data()
     }
 
     /// Build a fire-and-forget self-dispatch for `message`.

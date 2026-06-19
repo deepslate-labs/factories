@@ -48,7 +48,7 @@ impl Ticker {
         cx: EventContext<'_, Self>,
         mailbox: &mut (impl ActorMailbox + Send),
     ) -> Option<DispatchedActorMessage> {
-        if cx.extension().fired.load(Ordering::Acquire) < TICK_BUDGET {
+        if cx.shared_data().fired.load(Ordering::Acquire) < TICK_BUDGET {
             return Some(cx.message(Tick));
         }
         mailbox.receive().await
@@ -59,7 +59,7 @@ impl Ticker {
     #[handler]
     async fn tick(&mut self, #[context] actor: ActorContext<'_, Self>) {
         self.total += 1;
-        actor.extension().fired.fetch_add(1, Ordering::AcqRel);
+        actor.shared_data().fired.fetch_add(1, Ordering::AcqRel);
     }
 
     #[handler]

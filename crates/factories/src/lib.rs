@@ -81,6 +81,11 @@ pub use factories_actor::messages;
 #[cfg(feature = "derive")]
 pub use factories_actor::protocol;
 
+/// Declare a `&'static` [`Extension`](actor::extension::Extension) descriptor for
+/// type-erased context injected onto an actor at spawn, read in handlers via
+/// [`ActorContext::extensions`](actor::ActorContext::extensions).
+pub use factories_actor::declare_extension;
+
 pub mod prelude {
     //! The common surface for writing and spawning actors.
     //!
@@ -99,6 +104,8 @@ pub mod prelude {
     pub use crate::actor::lifecycle::{StopReason, TerminationKind, TerminationReason};
     pub use crate::actor::supervision::{ActorId, Terminated};
     pub use crate::actor::{Actor, ActorContext};
+    pub use crate::actor::extension::{Extension, ExtensionSet};
+    pub use crate::declare_extension;
     pub use crate::message::Message;
     pub use crate::spawn::ActorLauncher;
 

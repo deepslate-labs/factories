@@ -26,6 +26,7 @@ use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::{
     ActorLauncher, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
 };
+use factories_actor::actor::extension::ExtensionSet;
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_async_dispatcher};
 // ---------------------------------------------------------------------------
 // Test actor: Greeter - written fully by hand. This is the manual path the
@@ -81,7 +82,7 @@ unsafe impl Actor for Greeter {
     type LockStrategy = GreeterLock;
     type RunLoop = ConcurrentRunLoop<Greeter>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -423,7 +424,7 @@ async fn layer0_hand_assembly_matches_builder_behavior() {
         <TokioMpscActorChannel as CreatableChannel>::create(Default::default());
 
     // Step 2: shared state
-    let shared = SharedActorState::<Greeter>::new();
+    let shared = SharedActorState::<Greeter>::new(ExtensionSet::new());
 
     // Step 3: assemble the handle (identity exists before the loop, so the loop
     // can be given the actor's own weak self-reference)
@@ -511,7 +512,7 @@ mod custom_loop_scenario {
         type LockStrategy = CounterLock;
         type RunLoop = SequentialLoop;
         type TypedHandle = TypedActorHandle<Self>;
-        type SharedStateExtension = ();
+        type SharedData = ();
         type EventDriver = DefaultMailboxDriver;
     }
 
@@ -589,7 +590,7 @@ mod custom_loop_scenario {
 
         let (channel, mailbox) =
             <TokioMpscActorChannel as CreatableChannel>::create(Default::default());
-        let shared = SharedActorState::<Counter>::new();
+        let shared = SharedActorState::<Counter>::new(ExtensionSet::new());
 
         // Assemble the handle before the loop, so the loop's dispatch context can
         // carry the actor's own weak self-reference.
@@ -644,7 +645,7 @@ unsafe impl Actor for Supervisor {
     type LockStrategy = UnguardedLock<Supervisor>;
     type RunLoop = SequentialRunLoop<Supervisor>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = DeathLog;
+    type SharedData = DeathLog;
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -655,7 +656,7 @@ impl MessageHandler<Terminated> for Supervisor {
         declare_static_async_dispatcher!(Supervisor, Terminated, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, message, _) = ctx.into_parts();
-            actor_cx.extension().record(message.tag(), message.kind());
+            actor_cx.shared_data().record(message.tag(), message.kind());
         });
 }
 
@@ -671,7 +672,7 @@ impl MessageHandler<GetDeaths> for Supervisor {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
             if let Some(answer) = answer {
-                let _ = answer.send(actor_cx.extension().snapshot());
+                let _ = answer.send(actor_cx.shared_data().snapshot());
             }
         });
 }
@@ -723,7 +724,7 @@ unsafe impl Actor for Fragile {
     type LockStrategy = UnguardedLock<Fragile>;
     type RunLoop = SequentialRunLoop<Fragile>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -895,7 +896,7 @@ unsafe impl Actor for Tally {
     type LockStrategy = UnguardedLock<Tally>;
     type RunLoop = SequentialRunLoop<Tally>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -1001,7 +1002,7 @@ async fn weak_handle_upgrades_while_alive_and_fails_after_death() {
 // `Ticker`'s driver owns the polling decision: it fires `Tick` self-messages
 // until a lock-free counter in the *shared state extension* reaches a budget,
 // then defers to the mailbox. The `Tick` handler bumps that same counter - so
-// the driver and the handlers coordinate through `SharedStateExtension`, with no
+// the driver and the handlers coordinate through `SharedData`, with no
 // actor-lock contention. This exercises the driver-owns-the-mailbox model, raw
 // shared access, and the extension all at once.
 
@@ -1028,7 +1029,7 @@ unsafe impl Actor for Ticker {
     type LockStrategy = UnguardedLock<Ticker>;
     type RunLoop = SequentialRunLoop<Ticker>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = TickerShared;
+    type SharedData = TickerShared;
     type EventDriver = TickSource;
 }
 
@@ -1045,7 +1046,7 @@ impl MessageHandler<Tick> for Ticker {
             let (mut guard, _message, answer) = ctx.into_parts();
             guard.total += 1;
             actor_cx
-                .extension()
+                .shared_data()
                 .fired
                 .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
             if let Some(answer) = answer {
@@ -1089,7 +1090,7 @@ impl<M: ActorMailbox + Send> EventDriver<Ticker, M> for TickSource {
             // reading the shared counter the `Tick` handler bumps. Don't even
             // poll the mailbox until then - the actor's lever against starvation.
             if cx
-                .extension()
+                .shared_data()
                 .fired
                 .load(core::sync::atomic::Ordering::Acquire)
                 < TICK_BUDGET
@@ -1160,14 +1161,14 @@ unsafe impl Actor for Hooked {
     type LockStrategy = UnguardedLock<Hooked>;
     type RunLoop = SequentialRunLoop<Hooked>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = LifecycleLog;
+    type SharedData = LifecycleLog;
     type EventDriver = DefaultMailboxDriver;
 
     fn on_start<'a>(
         &'a mut self,
         cx: ActorContext<'a, Self>,
     ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        let log = cx.extension().clone();
+        let log = cx.shared_data().clone();
         async move { log.record("start") }
     }
 
@@ -1176,7 +1177,7 @@ unsafe impl Actor for Hooked {
         reason: StopReason<'a, Self>,
         cx: ActorContext<'a, Self>,
     ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
-        let log = cx.extension().clone();
+        let log = cx.shared_data().clone();
         let tag = match reason {
             StopReason::Finished => "stop:finished",
             StopReason::Failed(_) => "stop:failed",
@@ -1195,7 +1196,7 @@ impl MessageHandler<Ping> for Hooked {
     const DISPATCHER: StaticDispatcher<Hooked, Ping> = declare_static_async_dispatcher!(Hooked, Ping, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
-            actor_cx.extension().record("ping");
+            actor_cx.shared_data().record("ping");
             if let Some(answer) = answer {
                 let _ = answer.send(());
             }
@@ -1213,7 +1214,7 @@ async fn lifecycle_hooks_run_in_order() {
 
     // `on_start` ran before `Running` was observable, so `spawn_ready` already
     // sees it.
-    let log = handle.state().extension().clone();
+    let log = handle.state().shared_data().clone();
     assert_eq!(log.snapshot(), ["start"], "on_start runs before Running");
 
     handle.ask(Ping).exchange().await.expect("ask");

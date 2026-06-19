@@ -57,7 +57,7 @@ pub unsafe trait Actor: 'static {
     type LockStrategy: LockStrategy<Self> + 'static; // how state is guarded
     type RunLoop: ActorRunLoop<Self>;    // how messages are pulled and run
     type TypedHandle: From<TypedActorHandle<Self>>; // the handle callers hold
-    type SharedStateExtension: Default + Send + Sync; // out-of-band shared data
+    type SharedData: Default + Send + Sync; // out-of-band shared data
     type EventDriver: for<'a> From<&'a Self>; // where work comes from
 }
 ```
@@ -155,7 +155,7 @@ unsafe impl Actor for Greeter {
     type LockStrategy = UnguardedLock<Greeter>;
     type RunLoop = SequentialRunLoop<Greeter>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 ```

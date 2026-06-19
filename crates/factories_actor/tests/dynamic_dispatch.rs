@@ -42,7 +42,7 @@ unsafe impl Actor for Calc {
     type LockStrategy = TokioMutexLock<Calc>;
     type RunLoop = ConcurrentRunLoop<Calc>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 
@@ -65,7 +65,7 @@ unsafe impl Actor for Mirror {
     type LockStrategy = TokioRwLock<Mirror>;
     type RunLoop = ConcurrentRunLoop<Mirror>;
     type TypedHandle = TypedActorHandle<Self>;
-    type SharedStateExtension = ();
+    type SharedData = ();
     type EventDriver = DefaultMailboxDriver;
 }
 

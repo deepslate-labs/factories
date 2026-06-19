@@ -104,7 +104,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let binder = util::value_or_default(config.binder, binder_default);
     let lock = util::value_or_default(config.lock, lock_default);
     let run_loop = util::value_or_default(config.run_loop, run_loop_default);
-    // Not a template member: the shared-state extension defaults to `()`.
+    // Not a template member: the shared data defaults to `()`.
     let shared = util::value_or_default(config.shared, quote!(()));
     let rtti_name = util::rtti_name(config.name, ident);
 
@@ -227,7 +227,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
                 type LockStrategy = #lock;
                 type RunLoop = #run_loop;
                 type TypedHandle = #handle_ident;
-                type SharedStateExtension = #shared;
+                type SharedData = #shared;
                 type EventDriver = #event_driver;
 
                 #lifecycle_hooks

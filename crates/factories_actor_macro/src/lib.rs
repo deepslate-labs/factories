@@ -23,7 +23,7 @@ mod util;
 /// | `binder`       | `RuntimeBinder`       | `DefaultRuntimeBinder<Self>`  |
 /// | `lock`         | `LockStrategy`        | `DefaultLockStrategy<Self>`   |
 /// | `run_loop`     | `RunLoop`             | `DefaultRunLoop<Self>`        |
-/// | `shared`       | `SharedStateExtension`| `()`                          |
+/// | `shared`       | `SharedData`| `()`                          |
 /// | `event_driver` | `EventDriver`         | a generated mailbox loop      |
 ///
 /// The default `EventDriver` is a generated loop that pulls the mailbox and, at

@@ -142,7 +142,7 @@ impl Cache {
     /// of these hold it at once, so the slow reads happen in parallel.
     #[handler]
     async fn lookup(&self, key: u32, #[context] cx: ActorContext<'_, Self>) -> Option<u64> {
-        let gauge = cx.extension();
+        let gauge = cx.shared_data();
         let now = gauge.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
         gauge.peak.fetch_max(now, Ordering::AcqRel);
 
@@ -161,7 +161,7 @@ Fire eight lookups concurrently — build the ask futures, then await them toget
 ```rust
 let answers = futures::future::join_all((0..8).map(|key| cache.lookup(key).ask())).await;
 
-let peak = cache.state().extension().peak.load(Ordering::Acquire);
+let peak = cache.state().shared_data().peak.load(Ordering::Acquire);
 println!("peak concurrent lookups: {peak}"); // 8
 ```
 

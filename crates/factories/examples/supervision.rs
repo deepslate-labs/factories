@@ -49,13 +49,13 @@ impl Supervisor {
     ) {
         let (tag, kind) = (terminated.tag(), terminated.kind());
         println!("[supervisor] watched actor under tag {tag} left: {kind:?}");
-        cx.extension().record(tag, kind);
+        cx.shared_data().record(tag, kind);
     }
 
     // Query handler so the program can observe what the supervisor recorded.
     #[handler]
     async fn deaths(&self, #[context] cx: ActorContext<'_, Self>) -> Vec<(u64, TerminationKind)> {
-        cx.extension().snapshot()
+        cx.shared_data().snapshot()
     }
 }
 

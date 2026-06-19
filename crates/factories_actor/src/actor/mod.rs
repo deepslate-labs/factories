@@ -13,6 +13,7 @@ use state::SharedActorState;
 pub mod channel;
 pub mod dispatch;
 pub mod event;
+pub mod extension;
 pub mod handle;
 pub mod identity;
 pub mod lifecycle;
@@ -61,7 +62,7 @@ pub unsafe trait Actor: 'static {
     type TypedHandle: From<handle::TypedActorHandle<Self>>;
 
     /// User-defined data woven into the actor's shared state.
-    type SharedStateExtension: Default + Send + Sync;
+    type SharedData: Default + Send + Sync;
 
     /// The event-source driver multiplexed onto this actor's run loop.
     type EventDriver: for<'a> From<&'a Self>;
@@ -466,9 +467,19 @@ impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
         self.state.lifecycle()
     }
 
-    /// The actor's lock-free shared state extension.
-    pub fn extension(&self) -> &'a A::SharedStateExtension {
-        self.state.extension()
+    /// The actor's lock-free shared data.
+    pub fn shared_data(&self) -> &'a A::SharedData {
+        self.state.shared_data()
+    }
+
+    /// The type-erased extensions injected onto this actor at spawn.
+    ///
+    /// Read one with
+    /// [`ExtensionSet::get`](crate::actor::extension::ExtensionSet::get); pass the
+    /// whole set to [`ActorLauncher::inherit_from`](crate::spawn::ActorLauncher::inherit_from)
+    /// when spawning a child so its inheritable entries flow down.
+    pub fn extensions(&self) -> &'a extension::ExtensionSet {
+        self.state.extensions()
     }
 }
 

@@ -48,7 +48,7 @@ impl Heartbeat {
         cx: EventContext<'_, Self>,
         mailbox: &mut (impl ActorMailbox + Send),
     ) -> Option<DispatchedActorMessage> {
-        if cx.extension().fired.load(Ordering::Acquire) < TICK_BUDGET {
+        if cx.shared_data().fired.load(Ordering::Acquire) < TICK_BUDGET {
             // A heartbeat interval. Short so the example finishes in a blink.
             tokio::time::sleep(Duration::from_millis(20)).await;
             return Some(cx.message(Tick));
@@ -62,7 +62,7 @@ impl Heartbeat {
     #[handler]
     async fn tick(&mut self, #[context] cx: ActorContext<'_, Self>) {
         self.beats += 1;
-        cx.extension().fired.fetch_add(1, Ordering::AcqRel);
+        cx.shared_data().fired.fetch_add(1, Ordering::AcqRel);
         println!("  tick! beat #{}", self.beats);
     }
 

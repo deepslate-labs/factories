@@ -38,12 +38,12 @@ struct Hooked;
 impl Hooked {
     #[on_start]
     async fn start(&mut self, cx: ActorContext<'_, Self>) {
-        cx.extension().record("start");
+        cx.shared_data().record("start");
     }
 
     #[on_stop]
     async fn stop(self, reason: StopReason<'_, Self>, cx: ActorContext<'_, Self>) {
-        cx.extension().record(match reason {
+        cx.shared_data().record(match reason {
             StopReason::Finished => "stop:finished",
             StopReason::Failed(_) => "stop:failed",
         });
@@ -51,7 +51,7 @@ impl Hooked {
 
     #[handler]
     async fn ping(&self, #[context] cx: ActorContext<'_, Self>) {
-        cx.extension().record("ping");
+        cx.shared_data().record("ping");
     }
 }
 
@@ -65,7 +65,7 @@ async fn derived_lifecycle_hooks_run_in_order() {
         .expect("hooked init is infallible");
 
     // `on_start` ran before `Running` became observable.
-    let log = handle.state().extension().clone();
+    let log = handle.state().shared_data().clone();
     assert_eq!(log.snapshot(), ["start"], "on_start runs before Running");
 
     handle.ping().await.expect("ask");

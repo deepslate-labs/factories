@@ -1,4 +1,5 @@
 use crate::actor::event::EventDriver;
+use crate::actor::extension::{Extension, ExtensionSet};
 use crate::actor::handle::{TypedActorHandle, WeakActorHandle};
 use crate::actor::state::{LifecycleState, SharedActorState};
 use crate::actor::{Actor, ActorInit};
@@ -34,6 +35,12 @@ where
     /// The runtime binder placed on the actor identity.
     #[builder(default, default_where(<A as Actor>::RuntimeBinder: Default))]
     binder: A::RuntimeBinder,
+
+    /// Extensions injected onto the actor's shared state (see
+    /// [`crate::actor::extension`]). Defaults to empty; populated through
+    /// [`with_extension`](Self::with_extension) / [`inherit_from`](Self::inherit_from).
+    #[builder(default)]
+    extensions: ExtensionSet,
 }
 
 /// All parts defaultable: `ActorLauncher::default().spawn(...)` skips the
@@ -52,6 +59,7 @@ where
             channel_options: Default::default(),
             loop_config: Default::default(),
             binder: Default::default(),
+            extensions: ExtensionSet::new(),
         }
     }
 }
@@ -116,7 +124,7 @@ where
         <I::Init as ActorInit<A>>::Fut: Send,
     {
         let (channel, mailbox) = A::Channel::create(self.channel_options);
-        let shared = SharedActorState::new();
+        let shared = SharedActorState::new(self.extensions);
 
         // Build the identity (handle) before spawning, so the loop can be handed
         // the actor's own weak self-reference for `ctx.actor_ref()`.
@@ -133,5 +141,37 @@ where
         let _ = handle.state().attach_task(task);
 
         handle
+    }
+}
+
+// Extension injection. These only touch the launcher's pending extension set,
+// so they carry just the struct's own bounds - independent of the spawn path.
+impl<A: Actor> ActorLauncher<A>
+where
+    A::Channel: CreatableChannel,
+    A::RunLoop: SpawnableRunLoop<A>,
+    A::Error: Send + Sync + 'static,
+{
+    /// Inject `value` under `ext`. Readable from handlers via
+    /// [`ActorContext::extensions`](crate::actor::ActorContext::extensions); if
+    /// `ext` is inheritable, it propagates to children seeded from this actor's
+    /// set (see [`inherit_from`](Self::inherit_from)).
+    pub fn with_extension<T: Send + Sync + 'static>(
+        mut self,
+        ext: &'static Extension<T>,
+        value: T,
+    ) -> Self {
+        self.extensions.insert(ext, value);
+        self
+    }
+
+    /// Seed this launcher from `src`, copying its *inheritable* entries - the
+    /// way a child receives its spawner's context, via
+    /// `inherit_from(parent.extensions())`. Inheritance never overwrites a value
+    /// set explicitly with [`with_extension`](Self::with_extension), so an explicit
+    /// value wins no matter which order these two are called in.
+    pub fn inherit_from(mut self, src: &ExtensionSet) -> Self {
+        self.extensions.inherit_inheritable_from(src);
+        self
     }
 }
