@@ -143,6 +143,8 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
             );
         crate::obs::run_on_stop(A::RTTI.name(), id, stop_fut).await;
         crate::obs::actor_stopped(A::RTTI.name(), id, outcome, failed);
+        #[cfg(feature = "capture")]
+        crate::capture::record_died(&shared);
 
         // Push termination signals to watchers on the async path, awaiting
         // mailbox room so none are dropped. Drains the set, so the drop guard's
@@ -267,6 +269,8 @@ pub async fn standard_run_with<A, L, I, M>(
         }
         shared.transition_running();
         crate::obs::actor_started(A::RTTI.name(), shared.id());
+        #[cfg(feature = "capture")]
+        crate::capture::record_spawned(&shared);
 
         // Build the driver from the actor (seedable via its `From<&Actor>`
         // impl), before the actor moves into its lock.

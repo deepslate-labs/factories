@@ -13,10 +13,13 @@ use crate::actor::lifecycle::TerminationKind;
 use crate::actor::rtti::ActorRtti;
 use crate::message::envelope::MessageEnvelope;
 use alloc::sync::Weak;
+use core::fmt::Display;
+use core::num::NonZeroUsize;
 use core::sync::atomic::AtomicUsize;
 
-/// Source of process-unique [`ActorId`]s. Monotonic, so an id is never reused.
-static NEXT_WATCH_ID: AtomicUsize = AtomicUsize::new(0);
+/// Source of process-unique [`ActorId`]s. Monotonic, so an id is never reused;
+/// starts at 1 so 0 is free to serve as the `Option<ActorId>` niche.
+static NEXT_ACTOR_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// A process-unique identifier for an actor.
 ///
@@ -24,17 +27,44 @@ static NEXT_WATCH_ID: AtomicUsize = AtomicUsize::new(0);
 /// created, so it is never reused (unlike an address) and is stable for the life
 /// of the actor's identity - including across a future restart, since a restart
 /// replaces the instance but keeps the identity.
+#[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ActorId(usize);
+pub struct ActorId(NonZeroUsize);
 
 impl ActorId {
     pub(crate) fn new() -> Self {
-        Self(NEXT_WATCH_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
+        let raw = NEXT_ACTOR_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        // The counter starts at 1 and only increments, so `raw` is never 0
+        // (barring a full `usize` wrap - 2^64 spawns, not reachable).
+        Self(NonZeroUsize::new(raw).expect("ActorId counter starts at 1 and is monotonic"))
     }
 
-    /// The raw counter value backing this id.
+    /// The raw counter value backing this id (never 0).
     pub const fn as_usize(self) -> usize {
+        self.0.get()
+    }
+
+    /// The raw non-zero counter value backing this id.
+    pub const fn as_non_zero_usize(self) -> NonZeroUsize {
         self.0
+    }
+}
+
+impl From<ActorId> for usize {
+    fn from(id: ActorId) -> Self {
+        id.as_usize()
+    }
+}
+
+impl From<ActorId> for NonZeroUsize {
+    fn from(id: ActorId) -> Self {
+        id.0
+    }
+}
+
+impl Display for ActorId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Actor#{}", self.as_usize())
     }
 }
 
@@ -183,5 +213,29 @@ impl Subscription {
 
         let _ = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
             .try_send();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn actor_id_option_is_niche_packed() {
+        assert_eq!(size_of::<ActorId>(), size_of::<usize>());
+        assert_eq!(
+            size_of::<Option<ActorId>>(),
+            size_of::<ActorId>(),
+            "Option<ActorId> must niche-pack so a send from outside any actor is a free `None`",
+        );
+    }
+
+    #[test]
+    fn ids_are_monotonic_and_nonzero() {
+        let a = ActorId::new();
+        let b = ActorId::new();
+        assert!(b.as_usize() > a.as_usize(), "ids increase monotonically");
+        assert_ne!(a.as_usize(), 0, "0 is reserved as the `Option<ActorId>` niche");
     }
 }

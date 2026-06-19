@@ -2,8 +2,9 @@
 
 extern crate alloc;
 
-// Tests run on std targets (panic unwinding, catch_unwind).
-#[cfg(test)]
+// Tests run on std targets (panic unwinding, catch_unwind); the `capture`
+// feature also needs std for its loop-scoped thread-local sender context.
+#[cfg(any(test, feature = "capture"))]
 extern crate std;
 
 pub mod actor;
@@ -13,6 +14,11 @@ pub mod spawn;
 
 /// Internal `tracing` instrumentation helpers (no-ops without the feature).
 pub(crate) mod obs;
+
+/// Append-only capture/audit log of actor spawns, deaths, and message edges.
+/// Behind the `capture` feature.
+#[cfg(feature = "capture")]
+pub mod capture;
 
 /// Method-style message handlers: marks an inherent impl block, every
 /// `#[handler]` method additionally becomes a message handler. See the macro

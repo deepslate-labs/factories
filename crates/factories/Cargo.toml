@@ -27,6 +27,8 @@ tracing = ["factories_actor/tracing"]
 opentelemetry = ["factories_actor/opentelemetry"]
 # Global dynamic-dispatch registry: handlers registered at binary load.
 dynamic-dispatch = ["factories_actor/dynamic-dispatch"]
+# Append-only capture/audit log of spawns, deaths, and message edges (pulls std).
+capture = ["factories_actor/capture"]
 
 [dependencies]
 factories_actor = { workspace = true }

@@ -225,20 +225,22 @@ unsafe impl Sync for ExtensionSet {}
 /// ```
 #[macro_export]
 macro_rules! declare_extension {
-    ($vis:vis $name:ident : $t:ty, local) => {
-        $crate::declare_extension!($vis $name : $t, local, ::core::stringify!($name));
+    ($(#[$meta:meta])* $vis:vis $name:ident : $t:ty, local) => {
+        $crate::declare_extension!($(#[$meta])* $vis $name : $t, local, ::core::stringify!($name));
     };
-    ($vis:vis $name:ident : $t:ty, local, $label:expr) => {
+    ($(#[$meta:meta])* $vis:vis $name:ident : $t:ty, local, $label:expr) => {
+        $(#[$meta])*
         $vis const $name: &'static $crate::actor::extension::Extension<$t> = const {
             static VALUE: $crate::actor::extension::Extension<$t> =
                 $crate::actor::extension::Extension::local($label);
             &VALUE
         };
     };
-    ($vis:vis $name:ident : $t:ty, inheritable) => {
-        $crate::declare_extension!($vis $name : $t, inheritable, ::core::stringify!($name));
+    ($(#[$meta:meta])* $vis:vis $name:ident : $t:ty, inheritable) => {
+        $crate::declare_extension!($(#[$meta])* $vis $name : $t, inheritable, ::core::stringify!($name));
     };
-    ($vis:vis $name:ident : $t:ty, inheritable, $label:expr) => {
+    ($(#[$meta:meta])* $vis:vis $name:ident : $t:ty, inheritable, $label:expr) => {
+        $(#[$meta])*
         $vis const $name: &'static $crate::actor::extension::Extension<$t> = const {
             static VALUE: $crate::actor::extension::Extension<$t> =
                 $crate::actor::extension::Extension::inheritable($label);

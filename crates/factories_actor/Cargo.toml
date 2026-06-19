@@ -31,6 +31,12 @@ dynamic-dispatch = ["dep:factories_collect"]
 # `#[derive(Actor)]` and friends.
 derive = ["dep:factories_actor_macro"]
 
+# Append-only capture/audit log of actor spawns, deaths, and message edges.
+# Uses a thread-local for the loop-scoped sender context, so it pulls `std` (the
+# same way `tracing`'s `Span::current()` does); the dependency-free no_std core is
+# unaffected when this is off.
+capture = []
+
 [dependencies]
 tokio = { workspace = true, optional = true, default-features = false }
 futures = { workspace = true, features = ["alloc"] }

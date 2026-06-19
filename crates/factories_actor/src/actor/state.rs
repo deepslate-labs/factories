@@ -8,6 +8,8 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt::{Debug, Formatter};
 use core::sync::atomic::{AtomicU8, Ordering};
+#[cfg(feature = "capture")]
+use core::sync::atomic::AtomicUsize;
 use core::task::{Poll, Waker};
 use critical_section::Mutex;
 use once_cell::sync::OnceCell;
@@ -213,6 +215,12 @@ struct InnerSharedActorState<A: Actor + ?Sized> {
     // Type-erased, pointer-keyed context injected at spawn (see
     // [`crate::actor::extension`]); frozen here, read-only for the actor's life.
     extensions: ExtensionSet,
+
+    // Per-actor capture sequence: mints `(id, seq)` event ids on this actor's
+    // own cache line, so no global counter is needed. Bumped `Relaxed` only when
+    // the mesh is captured.
+    #[cfg(feature = "capture")]
+    capture_seq: AtomicUsize,
 }
 
 impl<A: Actor + ?Sized> InnerSharedActorState<A> {
@@ -225,6 +233,8 @@ impl<A: Actor + ?Sized> InnerSharedActorState<A> {
             task: OnceCell::new(),
             shared_data: A::SharedData::default(),
             extensions,
+            #[cfg(feature = "capture")]
+            capture_seq: AtomicUsize::new(1),
         }
     }
 }
@@ -390,6 +400,24 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
         &self.inner.extensions
     }
 
+    /// The capture sink configured for this actor's mesh, if any.
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_sink(&self) -> Option<&Arc<dyn crate::capture::CaptureSink>> {
+        self.inner.extensions.get(crate::capture::CAPTURE_SINK)
+    }
+
+    /// Mint this actor's next capture event id `(id, next per-actor seq)`. The
+    /// seq lives on this actor's own cache line, bumped `Relaxed` - no global
+    /// counter.
+    #[cfg(feature = "capture")]
+    pub(crate) fn next_capture_event_id(&self) -> crate::capture::EventId {
+        let seq = self.inner.capture_seq.fetch_add(1, Ordering::Relaxed);
+        crate::capture::EventId {
+            actor: self.inner.id,
+            seq,
+        }
+    }
+
     /// The current lifecycle state of the actor.
     pub fn lifecycle(&self) -> LifecycleState {
         self.inner.lifecycle.current()
@@ -473,6 +501,8 @@ impl<A: Actor + ?Sized> Drop for DeadOnDropGuard<A> {
             Some(TerminationReason::Aborted)
         ) {
             crate::obs::actor_aborted(A::RTTI.name(), self.state.id());
+            #[cfg(feature = "capture")]
+            crate::capture::record_died(&self.state);
         }
         // Fallback notification for the paths that skip the async terminal
         // (panic / task abort): can't await here, so best-effort. The clean and

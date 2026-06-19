@@ -86,6 +86,12 @@ pub use factories_actor::protocol;
 /// [`ActorContext::extensions`](actor::ActorContext::extensions).
 pub use factories_actor::declare_extension;
 
+/// The capture/audit log: typed [`capture::CaptureEvent`]s emitted to a
+/// [`capture::CaptureSink`], configured per-mesh via the inheritable
+/// [`capture::CAPTURE_SINK`] extension. Behind the `capture` feature.
+#[cfg(feature = "capture")]
+pub use factories_actor::capture;
+
 pub mod prelude {
     //! The common surface for writing and spawning actors.
     //!
