@@ -12,11 +12,16 @@
 //! the framework never consults a clock.
 
 use alloc::sync::Arc;
+use core::cell::Cell;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use crate::actor::lifecycle::TerminationKind;
 use crate::actor::state::SharedActorState;
 use crate::actor::supervision::ActorId;
 use crate::actor::Actor;
+use crate::message::envelope::EnvelopeType;
 
 /// Identity of a captured event: the actor that emitted it plus that actor's
 /// own monotonic sequence number.
@@ -104,11 +109,12 @@ crate::declare_extension!(
 pub(crate) fn record_spawned<A: Actor + ?Sized>(shared: &SharedActorState<A>) {
     if let Some(sink) = shared.capture_sink() {
         let id = shared.next_capture_event_id();
+        let origin = shared.capture_birth();
         sink.record(CaptureEvent::Spawned {
             id,
             actor_type: A::RTTI.name(),
-            parent: None,    // stage 4: thread the spawning actor
-            caused_by: None, // stage 4: thread the spawn's cause
+            parent: origin.map(|frame| frame.actor),
+            caused_by: origin.and_then(|frame| frame.handling),
         });
     }
 }
@@ -128,8 +134,132 @@ pub(crate) fn record_died<A: Actor + ?Sized>(shared: &SharedActorState<A>) {
             id,
             actor_type: A::RTTI.name(),
             reason,
-            caused_by: None, // stage 4: link a failure to its handler event
+            caused_by: None, // future: link a failure to its handler event
         });
+    }
+}
+
+/// The loop-scoped capture context of the actor whose handler is currently
+/// running on this thread: its id and the event it is handling (for `caused_by`).
+///
+/// `handling` is itself optional: a frame can exist without a causing event (work
+/// done outside message dispatch).
+#[derive(Copy, Clone)]
+pub(crate) struct CaptureFrame {
+    actor: ActorId,
+    handling: Option<EventId>,
+}
+
+std::thread_local! {
+    /// The running actor's capture frame, set per-poll around its handler (see
+    /// [`WithFrame`]); `None` when no captured actor is running on this thread -
+    /// e.g. a send from outside the mesh.
+    static CURRENT_FRAME: Cell<Option<CaptureFrame>> = const { Cell::new(None) };
+}
+
+impl From<EnvelopeType> for Dispatch {
+    fn from(ty: EnvelopeType) -> Self {
+        match ty {
+            EnvelopeType::Tell => Dispatch::Tell,
+            EnvelopeType::Ask => Dispatch::Ask,
+        }
+    }
+}
+
+/// What a send stamps onto its dispatch context from the current frame: the
+/// sender and the event whose handling produced the send (both `None` for a send
+/// from outside any captured actor).
+#[derive(Debug, Copy, Clone, Default)]
+pub struct CaptureStamp {
+    /// The sending actor, or `None` if sent from outside any actor.
+    pub from: Option<ActorId>,
+    /// The event the sender was handling when it sent, for the receiver's `caused_by`.
+    pub caused_by: Option<EventId>,
+}
+
+/// Read the current frame as a [`CaptureStamp`] - called at every send site.
+pub(crate) fn current_stamp() -> CaptureStamp {
+    CURRENT_FRAME.with(|frame| match frame.get() {
+        Some(frame) => CaptureStamp {
+            from: Some(frame.actor),
+            caused_by: frame.handling,
+        },
+        None => CaptureStamp::default(),
+    })
+}
+
+/// The capture frame of the actor currently running on this thread, if any. Read
+/// at spawn to record the new actor's `parent` (the frame's actor) and the event
+/// that caused the spawn (the frame's `handling`).
+pub(crate) fn current_frame() -> Option<CaptureFrame> {
+    CURRENT_FRAME.with(|frame| frame.get())
+}
+
+/// Record the message being dispatched (if the mesh is captured) and wrap the
+/// handler future so that, while it runs, *this* actor is the current frame -
+/// so any send or spawn it makes is attributed to it and to this message.
+///
+/// Called by the dispatcher for each delivered message - the `#[messages]`-generated
+/// dispatcher reaches it through `capture_instrument_if_enabled!`; a hand-written
+/// dispatcher calls it directly.
+pub fn instrument_handler<A: Actor + ?Sized, F: Future<Output = ()>>(
+    shared: &SharedActorState<A>,
+    stamp: CaptureStamp,
+    message_type: &'static str,
+    dispatch: Dispatch,
+    handler: F,
+) -> WithFrame<F> {
+    let frame = shared.capture_sink().map(|sink| {
+        let id = shared.next_capture_event_id();
+        sink.record(CaptureEvent::Message {
+            id,
+            from: stamp.from,
+            to: id.actor,
+            message_type,
+            dispatch,
+            caused_by: stamp.caused_by,
+        });
+        CaptureFrame {
+            actor: id.actor,
+            handling: Some(id),
+        }
+    });
+
+    WithFrame {
+        frame,
+        inner: handler,
+    }
+}
+
+/// Future that makes `frame` the current capture frame on this thread for each
+/// poll of `inner`, restoring the previous frame afterward - the same per-poll
+/// enter/exit pattern as `tracing`'s `Instrument`.
+#[pin_project::pin_project]
+pub struct WithFrame<F> {
+    frame: Option<CaptureFrame>,
+    #[pin]
+    inner: F,
+}
+
+impl<F: Future> Future for WithFrame<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let this = self.project();
+
+        // Restore the previous frame on scope exit - *including* a panic unwind out
+        // of the inner poll - so a panicking handler never leaves its frame set for
+        // the next actor polled on this worker thread (which would misattribute that
+        // actor's sends). This is the analogue of `tracing`'s span-guard drop.
+        struct Restore(Option<CaptureFrame>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CURRENT_FRAME.with(|current| current.set(self.0));
+            }
+        }
+
+        let _restore = Restore(CURRENT_FRAME.with(|current| current.replace(*this.frame)));
+        this.inner.poll(cx)
     }
 }
 

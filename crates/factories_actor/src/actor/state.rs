@@ -221,6 +221,11 @@ struct InnerSharedActorState<A: Actor + ?Sized> {
     // the mesh is captured.
     #[cfg(feature = "capture")]
     capture_seq: AtomicUsize,
+
+    // The spawn-site link recorded when this actor's `Spawned` event is emitted:
+    // who spawned it and the event that caused the spawn.
+    #[cfg(feature = "capture")]
+    capture_birth: OnceCell<Option<crate::capture::CaptureFrame>>,
 }
 
 impl<A: Actor + ?Sized> InnerSharedActorState<A> {
@@ -235,6 +240,8 @@ impl<A: Actor + ?Sized> InnerSharedActorState<A> {
             extensions,
             #[cfg(feature = "capture")]
             capture_seq: AtomicUsize::new(1),
+            #[cfg(feature = "capture")]
+            capture_birth: OnceCell::new(),
         }
     }
 }
@@ -416,6 +423,19 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
             actor: self.inner.id,
             seq,
         }
+    }
+
+    /// Record the frame of the actor that spawned this one.
+    #[cfg(feature = "capture")]
+    pub(crate) fn set_capture_birth(&self, frame: Option<crate::capture::CaptureFrame>) {
+        let _ = self.inner.capture_birth.set(frame);
+    }
+
+    /// The frame of the actor that spawned this one, if any (`None` for a root
+    /// spawn or if none was recorded).
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_birth(&self) -> Option<crate::capture::CaptureFrame> {
+        self.inner.capture_birth.get().copied().flatten()
     }
 
     /// The current lifecycle state of the actor.

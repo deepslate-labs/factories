@@ -189,6 +189,13 @@ macro_rules! declare_static_async_dispatcher {
                 )
                 .await;
 
+                // Grab the sender's stamp and this message's dispatch kind before
+                // the context is decomposed (so the capture path never touches the
+                // `!Send` envelope local). No-op without `capture`.
+                $crate::capture_grab_if_enabled!(
+                    message_context => __factories_cap_stamp, __factories_cap_dispatch
+                );
+
                 let (envelope, span) = message_context.into_parts();
 
                 let __factories_actor_id =
@@ -208,6 +215,19 @@ macro_rules! declare_static_async_dispatcher {
                 };
 
                 let work = __factories_run_handler(ctx);
+
+                // Record this delivery and make this actor the current capture
+                // frame while the handler runs, so any send or spawn it makes is
+                // attributed to it and this message. No-op without `capture`.
+                $crate::capture_instrument_if_enabled!(
+                    work,
+                    $crate::actor::ActorRunLoopDispatchContext::shared_state(dispatch_context),
+                    $actor,
+                    __factories_cap_stamp,
+                    <$message as $crate::message::Message>::RTTI.name(),
+                    __factories_cap_dispatch
+                );
+
                 span.instrument(
                     <$actor as $crate::actor::Actor>::RTTI.name(),
                     __factories_actor_id,
@@ -246,6 +266,46 @@ macro_rules! declare_static_async_dispatcher {
 }
 
 pub use declare_static_async_dispatcher;
+
+/// Bind `$stamp` / `$dispatch` from the dispatch context (before it is decomposed)
+/// for a dispatcher's capture wiring.
+#[cfg(feature = "capture")]
+#[macro_export]
+macro_rules! capture_grab_if_enabled {
+    ($mc:ident => $stamp:ident, $dispatch:ident) => {
+        let $stamp = $mc.capture_stamp();
+        let $dispatch = $mc.capture_dispatch();
+    };
+}
+
+/// The `capture` feature is disabled, so this expands to nothing.
+#[cfg(not(feature = "capture"))]
+#[macro_export]
+macro_rules! capture_grab_if_enabled {
+    ($mc:ident => $stamp:ident, $dispatch:ident) => {};
+}
+
+/// Record this delivery as a captured edge and rebind `$work` so the handler runs
+/// as the current capture frame.
+#[cfg(feature = "capture")]
+#[macro_export]
+macro_rules! capture_instrument_if_enabled {
+    ($work:ident, $shared:expr, $actor:ty, $stamp:ident, $message:expr, $dispatch:ident) => {
+        let $work = $crate::capture::instrument_handler::<$actor, _>(
+            $shared, $stamp, $message, $dispatch, $work,
+        );
+    };
+}
+
+/// The `capture` feature is disabled, so this expands to nothing.
+#[cfg(not(feature = "capture"))]
+#[macro_export]
+macro_rules! capture_instrument_if_enabled {
+    ($work:ident, $shared:expr, $actor:ty, $stamp:ident, $message:expr, $dispatch:ident) => {};
+}
+
+pub use capture_grab_if_enabled;
+pub use capture_instrument_if_enabled;
 
 /// Implement [`MessageHandler`](crate::actor::MessageHandler) for an
 /// actor/message pair.
@@ -448,15 +508,44 @@ pub struct DispatchedActorMessageContext {
 
     #[cfg(feature = "tracing")]
     pub span: tracing::Span,
+
+    // Grabbed from the sender's loop-scoped frame at send time; read by the
+    // receiver's dispatcher to record the edge with its origin and cause.
+    #[cfg(feature = "capture")]
+    capture: crate::capture::CaptureStamp,
 }
 
 impl DispatchedActorMessageContext {
+    /// Build the dispatch context for a send, capturing the call site's ambient
+    /// context: the current `tracing` span, and - under `capture` - the sender's
+    /// loop-scoped frame.
+    ///
+    /// Call this *synchronously at the send site*, while the sending actor's
+    /// handler is on the stack - that is when the frame (and span) are active.
+    /// Called from outside any handler (a root/external send, or a framework
+    /// `Terminated` delivery) the capture stamp is `None`, correctly recording an
+    /// external origin. Deferring it past an `.await` would capture the wrong frame.
     pub fn of(envelope: MessageEnvelope) -> Self {
         Self {
             envelope,
             #[cfg(feature = "tracing")]
             span: tracing::Span::current(),
+            #[cfg(feature = "capture")]
+            capture: crate::capture::current_stamp(),
         }
+    }
+
+    /// The capture stamp grabbed from the current frame at send time: the sender
+    /// and the event whose handling produced this send (both `None` if external).
+    #[cfg(feature = "capture")]
+    pub fn capture_stamp(&self) -> crate::capture::CaptureStamp {
+        self.capture
+    }
+
+    /// This message's dispatch kind, for the captured edge.
+    #[cfg(feature = "capture")]
+    pub fn capture_dispatch(&self) -> crate::capture::Dispatch {
+        crate::capture::Dispatch::from(self.envelope.ty())
     }
 
     /// Decompose the context into the envelope and the handler span.

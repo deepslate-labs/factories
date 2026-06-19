@@ -126,6 +126,11 @@ where
         let (channel, mailbox) = A::Channel::create(self.channel_options);
         let shared = SharedActorState::new(self.extensions);
 
+        // Record who spawned this actor (the frame of the handler we're running
+        // in, if any) for its `Spawned` event; `(None, None)` for a root spawn.
+        #[cfg(feature = "capture")]
+        shared.set_capture_birth(crate::capture::current_frame());
+
         // Build the identity (handle) before spawning, so the loop can be handed
         // the actor's own weak self-reference for `ctx.actor_ref()`.
         let handle = TypedActorHandle::assemble(channel, self.binder, shared.clone());
