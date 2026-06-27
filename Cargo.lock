@@ -336,6 +336,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "factories_capture_schema"
+version = "0.1.0"
+
+[[package]]
 name = "factories_capture_sink"
 version = "0.1.0"
 dependencies = [
