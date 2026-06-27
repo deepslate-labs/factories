@@ -6,6 +6,7 @@ members = [
     "crates/factories_benchmarks",
     "crates/factories_capture_codec",
     "crates/factories_capture_schema",
+    "crates/factories_capture_schema_macro",
     "crates/factories_capture_sink",
     "crates/factories_collect",
     "crates/factories_extension",
@@ -46,6 +47,7 @@ factories_actor = { path = "crates/factories_actor" }
 factories_actor_macro = { path = "crates/factories_actor_macro" }
 factories_capture_codec = { path = "crates/factories_capture_codec" }
 factories_capture_schema = { path = "crates/factories_capture_schema" }
+factories_capture_schema_macro = { path = "crates/factories_capture_schema_macro" }
 factories_capture_sink = { path = "crates/factories_capture_sink" }
 factories_collect = { path = "crates/factories_collect" }
 factories_extension = { path = "crates/factories_extension" }

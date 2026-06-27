@@ -3,4 +3,10 @@ name = "factories_capture_schema"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# `#[derive(CaptureSchema)]`.
+derive = ["dep:factories_capture_schema_macro"]
+
 [dependencies]
+factories_extension = { workspace = true }
+factories_capture_schema_macro = { workspace = true, optional = true }

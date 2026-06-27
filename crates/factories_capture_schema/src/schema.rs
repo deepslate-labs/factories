@@ -4,14 +4,55 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use factories_extension::{Extension, ExtensionSet};
+
 use crate::interpretation::Interpretation;
 
-/// Dump-time configuration handed to each [`CaptureSchema::capture`] call. A
-/// message decides, per field, what to emit at a given verbosity.
-#[derive(Debug, Copy, Clone)]
-pub struct CaptureConfig {
-    /// Higher reveals more; a field is emitted only if its level is admitted.
-    pub verbosity: u8,
+/// An empty extension set, so a verbosity-only [`CaptureConfig`] has something
+/// to borrow.
+static EMPTY_EXTENSIONS: ExtensionSet = ExtensionSet::new();
+
+/// Dump-time configuration handed to each [`CaptureSchema::capture`] call.
+///
+/// A message decides, per field, what to reveal — gated by combinators over
+/// this config (see [`crate::predicate`]). It only ever travels by shared
+/// reference into `capture`, so its lifetime is lax: it *borrows* the extension
+/// set (owned elsewhere, e.g. by the sink) rather than owning it. `verbosity`
+/// is the one universal dial; richer/consumer dimensions are config extensions.
+#[derive(Clone, Copy)]
+pub struct CaptureConfig<'a> {
+    verbosity: u8,
+    extensions: &'a ExtensionSet,
+}
+
+impl CaptureConfig<'static> {
+    /// A verbosity-only config (no extensions).
+    pub fn new(verbosity: u8) -> Self {
+        Self {
+            verbosity,
+            extensions: &EMPTY_EXTENSIONS,
+        }
+    }
+}
+
+impl<'a> CaptureConfig<'a> {
+    /// A config carrying `extensions` (consumer policy dimensions) at `verbosity`.
+    pub fn with_extensions(verbosity: u8, extensions: &'a ExtensionSet) -> Self {
+        Self {
+            verbosity,
+            extensions,
+        }
+    }
+
+    /// The verbosity dial.
+    pub fn verbosity(&self) -> u8 {
+        self.verbosity
+    }
+
+    /// Borrow a config extension, if present.
+    pub fn get<T: 'static>(&self, ext: &'static Extension<T>) -> Option<&T> {
+        self.extensions.get(ext)
+    }
 }
 
 /// Receives the structure and values a [`CaptureSchema`] pushes.
@@ -53,13 +94,13 @@ pub trait FieldVisitor {
 pub trait CaptureSchema {
     /// Push this value's structure and contents into `visitor`, revealing only
     /// what `config` admits.
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig);
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig<'_>);
 }
 
 macro_rules! impl_uint {
     ($($t:ty),*) => {$(
         impl CaptureSchema for $t {
-            fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig) {
+            fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig<'_>) {
                 visitor.uint(*self as u64);
             }
         }
@@ -70,7 +111,7 @@ impl_uint!(u8, u16, u32, u64, usize);
 macro_rules! impl_int {
     ($($t:ty),*) => {$(
         impl CaptureSchema for $t {
-            fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig) {
+            fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig<'_>) {
                 visitor.int(*self as i64);
             }
         }
@@ -81,7 +122,7 @@ impl_int!(i8, i16, i32, i64, isize);
 macro_rules! impl_float {
     ($($t:ty),*) => {$(
         impl CaptureSchema for $t {
-            fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig) {
+            fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig<'_>) {
                 visitor.float(*self as f64);
             }
         }
@@ -90,31 +131,31 @@ macro_rules! impl_float {
 impl_float!(f32, f64);
 
 impl CaptureSchema for bool {
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig) {
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig<'_>) {
         visitor.boolean(*self);
     }
 }
 
 impl CaptureSchema for str {
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig) {
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig<'_>) {
         visitor.string(self);
     }
 }
 
 impl CaptureSchema for String {
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig) {
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, _config: &CaptureConfig<'_>) {
         visitor.string(self.as_str());
     }
 }
 
 impl<T: CaptureSchema + ?Sized> CaptureSchema for &T {
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig) {
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig<'_>) {
         (**self).capture(visitor, config);
     }
 }
 
 impl<T: CaptureSchema> CaptureSchema for Vec<T> {
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig) {
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig<'_>) {
         visitor.begin_seq(self.len());
         for element in self {
             element.capture(visitor, config);
@@ -124,7 +165,7 @@ impl<T: CaptureSchema> CaptureSchema for Vec<T> {
 }
 
 impl<T: CaptureSchema> CaptureSchema for Option<T> {
-    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig) {
+    fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig<'_>) {
         match self {
             Some(value) => {
                 visitor.some();
@@ -196,7 +237,7 @@ mod tests {
 
     fn record_at<T: CaptureSchema + ?Sized>(value: &T, verbosity: u8) -> Vec<String> {
         let mut recorder = Recorder::default();
-        value.capture(&mut recorder, &CaptureConfig { verbosity });
+        value.capture(&mut recorder, &CaptureConfig::new(verbosity));
         recorder.events
     }
 
@@ -235,11 +276,11 @@ mod tests {
     }
 
     impl CaptureSchema for Frame {
-        fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig) {
+        fn capture<V: FieldVisitor>(&self, visitor: &mut V, config: &CaptureConfig<'_>) {
             visitor.begin_struct("Frame");
             visitor.field("id", Interpretation::NONE);
             self.id.capture(visitor, config);
-            if config.verbosity >= 1 {
+            if config.verbosity() >= 1 {
                 visitor.field(
                     "samples",
                     Interpretation {

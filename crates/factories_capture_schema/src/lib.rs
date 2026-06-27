@@ -17,7 +17,14 @@
 extern crate alloc;
 
 pub mod interpretation;
+pub mod predicate;
 pub mod schema;
 
 pub use interpretation::{Interpretation, Scalar};
 pub use schema::{CaptureConfig, CaptureSchema, FieldVisitor};
+
+/// `#[derive(CaptureSchema)]` — generates the trait impl from `#[capture(...)]`
+/// field attributes. Behind the `derive` feature. (Shares the `CaptureSchema`
+/// name with the trait — they live in different namespaces, à la serde.)
+#[cfg(feature = "derive")]
+pub use factories_capture_schema_macro::CaptureSchema;
