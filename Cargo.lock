@@ -293,6 +293,7 @@ dependencies = [
  "critical-section",
  "factories_actor_macro",
  "factories_collect",
+ "factories_extension",
  "factories_rtti",
  "futures",
  "once_cell",
@@ -350,6 +351,13 @@ dependencies = [
 [[package]]
 name = "factories_collect"
 version = "0.1.0"
+
+[[package]]
+name = "factories_extension"
+version = "0.1.0"
+dependencies = [
+ "factories_rtti",
+]
 
 [[package]]
 name = "factories_rtti"

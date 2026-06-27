@@ -7,6 +7,11 @@ extern crate alloc;
 #[cfg(any(test, feature = "capture"))]
 extern crate std;
 
+/// The pointer-keyed extension system lives in its own crate now; re-exported
+/// at the root so `factories_actor::declare_extension!` (and the facade's, and
+/// the in-crate `crate::declare_extension!`) keep working unchanged.
+pub use factories_extension::declare_extension;
+
 pub mod actor;
 pub mod message;
 pub mod runtime;

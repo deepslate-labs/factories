@@ -47,6 +47,7 @@ critical-section = { workspace = true }
 
 paste = { workspace = true }
 factories_rtti = { workspace = true }
+factories_extension = { workspace = true }
 factories_collect = { workspace = true, optional = true }
 factories_actor_macro = { workspace = true, optional = true }
 seq-macro = { workspace = true }
