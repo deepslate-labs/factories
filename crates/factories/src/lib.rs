@@ -92,6 +92,17 @@ pub use factories_actor::declare_extension;
 #[cfg(feature = "capture")]
 pub use factories_actor::capture;
 
+/// The capture wire-format codec: encode/decode the byte stream of segments and
+/// records (used to read a capture back). Behind the `capture` feature.
+#[cfg(feature = "capture")]
+pub use factories_capture_codec as capture_codec;
+
+/// The reference [`capture::CaptureSink`]: per-thread buffered, synchronous
+/// writing to an [`std::io::Write`]. See [`capture_sink::BufferedCaptureSink`].
+/// Behind the `capture` feature.
+#[cfg(feature = "capture")]
+pub use factories_capture_sink as capture_sink;
+
 pub mod prelude {
     //! The common surface for writing and spawning actors.
     //!

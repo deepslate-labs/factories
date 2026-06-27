@@ -12,4 +12,10 @@
 //! lives in [`factories_capture_codec`] and the trait in `factories_actor`, so a
 //! different sink (a network streamer, a ring buffer) can reuse both.
 
+pub mod buffer;
 pub mod clock;
+pub mod encode;
+pub mod sink;
+pub mod writer;
+
+pub use sink::BufferedCaptureSink;

@@ -280,6 +280,8 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "factories_actor",
+ "factories_capture_codec",
+ "factories_capture_sink",
  "futures",
  "tokio",
 ]

@@ -28,10 +28,13 @@ opentelemetry = ["factories_actor/opentelemetry"]
 # Global dynamic-dispatch registry: handlers registered at binary load.
 dynamic-dispatch = ["factories_actor/dynamic-dispatch"]
 # Append-only capture/audit log of spawns, deaths, and message edges (pulls std).
-capture = ["factories_actor/capture"]
+capture = ["factories_actor/capture", "dep:factories_capture_codec", "dep:factories_capture_sink"]
 
 [dependencies]
 factories_actor = { workspace = true }
+# The capture wire-format codec + reference sink (only with the `capture` feature).
+factories_capture_codec = { workspace = true, optional = true }
+factories_capture_sink = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

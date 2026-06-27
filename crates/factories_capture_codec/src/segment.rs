@@ -210,6 +210,12 @@ impl SegmentEncoder {
         }
     }
 
+    /// Bytes of records accumulated so far (excludes the header and string
+    /// table) - a cheap proxy for deciding when a segment is large enough to flush.
+    pub fn encoded_len(&self) -> usize {
+        self.records.len()
+    }
+
     /// Finish the segment with the clock readings taken as it closed, returning
     /// its complete bytes (length-prefixed). The open/close pair brackets every
     /// record, so their ticks interpolate to wall-clock without any calibration.

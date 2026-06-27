@@ -20,6 +20,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use factories_capture_codec::segment::ClockMode;
 
 /// A monotonic tick source plus the anchors needed to map ticks to wall-clock.
+#[derive(Clone, Copy)]
 pub struct Clock {
     mode: ClockMode,
     /// Reference instant for the monotonic axis (and the tick source in
