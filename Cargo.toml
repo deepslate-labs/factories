@@ -4,6 +4,8 @@ members = [
     "crates/factories_actor",
     "crates/factories_actor_macro",
     "crates/factories_benchmarks",
+    "crates/factories_capture_codec",
+    "crates/factories_capture_sink",
     "crates/factories_collect",
     "crates/factories_rtti",
     "crates/factories_types_macro"
@@ -40,6 +42,8 @@ thiserror = { version = "2.0.18", default-features = false }
 factories = { path = "crates/factories" }
 factories_actor = { path = "crates/factories_actor" }
 factories_actor_macro = { path = "crates/factories_actor_macro" }
+factories_capture_codec = { path = "crates/factories_capture_codec" }
+factories_capture_sink = { path = "crates/factories_capture_sink" }
 factories_collect = { path = "crates/factories_collect" }
 factories_mem = { path = "crates/factories_mem" }
 factories_rtti = { path = "crates/factories_rtti" }

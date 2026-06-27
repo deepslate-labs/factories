@@ -1,0 +1,15 @@
+[package]
+name = "factories_capture_sink"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["arch-clock"]
+# Compile the architecture-specific CPU timestamp counters (x86-64 `rdtsc`,
+# AArch64 `cntvct_el0`). Additive: with this off, only the portable monotonic
+# clock is built — the hard kill-switch if CPU timestamps ever misbehave.
+arch-clock = []
+
+[dependencies]
+factories_actor = { workspace = true, features = ["capture"] }
+factories_capture_codec = { workspace = true }

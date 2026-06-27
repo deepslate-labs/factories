@@ -327,6 +327,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "factories_capture_codec"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "factories_capture_sink"
+version = "0.1.0"
+dependencies = [
+ "factories_actor",
+ "factories_capture_codec",
+]
+
+[[package]]
 name = "factories_collect"
 version = "0.1.0"
 
