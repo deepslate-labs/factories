@@ -156,6 +156,10 @@ pub struct Segment {
     pub close_tick: u64,
     /// Deduplicated type names, referenced by index from records.
     pub strings: Vec<String>,
+    /// Interned interpretation blobs (payload field hints), referenced by id.
+    pub interpretations: Vec<Vec<u8>>,
+    /// Interned schema (type-tree) blobs, referenced by a payload's `schema_id`.
+    pub schemas: Vec<Vec<u8>>,
     /// The records, in the order they were emitted.
     pub records: Vec<Record>,
 }
@@ -196,6 +200,8 @@ pub struct SegmentEncoder {
     anchor: SegmentAnchor,
     last_tick: u64,
     strings: Vec<String>,
+    interpretations: Vec<Vec<u8>>,
+    schemas: Vec<Vec<u8>>,
     records: Vec<u8>,
 }
 
@@ -206,8 +212,20 @@ impl SegmentEncoder {
             anchor,
             last_tick: anchor.tick,
             strings: Vec::new(),
+            interpretations: Vec::new(),
+            schemas: Vec::new(),
             records: Vec::new(),
         }
+    }
+
+    /// Intern an interpretation blob, returning its table index (deduplicated).
+    pub fn intern_interpretation(&mut self, blob: &[u8]) -> u32 {
+        intern_blob(&mut self.interpretations, blob)
+    }
+
+    /// Intern a schema (type-tree) blob, returning its `schema_id` (deduplicated).
+    pub fn intern_schema(&mut self, blob: &[u8]) -> u32 {
+        intern_blob(&mut self.schemas, blob)
     }
 
     /// Bytes of records accumulated so far (excludes the header and string
@@ -233,6 +251,9 @@ impl SegmentEncoder {
             write_uvarint(&mut body, s.len() as u64);
             body.extend_from_slice(s.as_bytes());
         }
+
+        write_blob_table(&mut body, &self.interpretations);
+        write_blob_table(&mut body, &self.schemas);
 
         body.extend_from_slice(&self.records);
 
@@ -380,6 +401,11 @@ pub fn decode_segment(input: &[u8]) -> Result<(Segment, usize), DecodeError> {
         ));
     }
 
+    let (interpretations, next) = read_blob_table(body, pos)?;
+    pos = next;
+    let (schemas, next) = read_blob_table(body, pos)?;
+    pos = next;
+
     let mut records = Vec::new();
     while pos < body.len() {
         let (record, n) = decode_record(&body[pos..])?;
@@ -402,6 +428,8 @@ pub fn decode_segment(input: &[u8]) -> Result<(Segment, usize), DecodeError> {
             close_mono_micros,
             close_tick,
             strings,
+            interpretations,
+            schemas,
             records,
         },
         total,
@@ -512,9 +540,48 @@ fn read_cause(input: &[u8]) -> Result<(Option<EventRef>, usize), DecodeError> {
     }
 }
 
+/// Intern `blob` into `table` (linear dedup), returning its index.
+fn intern_blob(table: &mut Vec<Vec<u8>>, blob: &[u8]) -> u32 {
+    if let Some(index) = table.iter().position(|existing| existing == blob) {
+        return index as u32;
+    }
+    let index = table.len() as u32;
+    table.push(blob.to_vec());
+    index
+}
+
+/// Write a length-prefixed table of length-delimited blobs.
+fn write_blob_table(body: &mut Vec<u8>, table: &[Vec<u8>]) {
+    write_uvarint(body, table.len() as u64);
+    for blob in table {
+        write_uvarint(body, blob.len() as u64);
+        body.extend_from_slice(blob);
+    }
+}
+
+/// Read a blob table written by [`write_blob_table`], returning it and the new
+/// position.
+fn read_blob_table(body: &[u8], mut pos: usize) -> Result<(Vec<Vec<u8>>, usize), DecodeError> {
+    let (count, n) = read_uvarint(&body[pos..])?;
+    pos += n;
+    let mut table = Vec::new();
+    for _ in 0..count {
+        let (len, n) = read_uvarint(&body[pos..])?;
+        pos += n;
+        let blob = body
+            .get(pos..pos + len as usize)
+            .ok_or(DecodeError::UnexpectedEof)?
+            .to_vec();
+        pos += len as usize;
+        table.push(blob);
+    }
+    Ok((table, pos))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn sample_anchor() -> SegmentAnchor {
         SegmentAnchor {
@@ -527,6 +594,23 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test ids are non-zero")
+    }
+
+    #[test]
+    fn interpretation_and_schema_tables_round_trip_and_dedup() {
+        let a = sample_anchor();
+        let mut enc = SegmentEncoder::new(a);
+        assert_eq!(enc.intern_interpretation(b"audio"), 0);
+        assert_eq!(enc.intern_interpretation(b"image"), 1);
+        assert_eq!(enc.intern_interpretation(b"audio"), 0, "interpretations dedup");
+        assert_eq!(enc.intern_schema(b"\x05\x01"), 0);
+        assert_eq!(enc.intern_schema(b"\x05\x01"), 0, "schemas dedup");
+
+        let bytes = enc.finish(a.mono_micros + 1000, a.tick + 1000);
+        let (seg, _) = decode_segment(&bytes).expect("decodes");
+
+        assert_eq!(seg.interpretations, vec![b"audio".to_vec(), b"image".to_vec()]);
+        assert_eq!(seg.schemas, vec![b"\x05\x01".to_vec()]);
     }
 
     #[test]
