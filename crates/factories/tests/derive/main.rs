@@ -27,6 +27,7 @@ mod event_source;
 mod extensions;
 mod failure;
 mod handlers;
+mod lane_channel;
 mod lifecycle;
 mod markers;
 mod message;

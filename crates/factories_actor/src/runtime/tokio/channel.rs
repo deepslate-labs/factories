@@ -307,3 +307,147 @@ impl<const SEND_LANES: usize> ActorMailbox for TokioMpscMultilaneActorMailbox<SE
         select_biased(self.receiver.each_mut().map(|receiver| receiver.receive())).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actor::dispatch::{
+        ActorMessageDispatcher, DispatchContextPtr, DispatchedActorMessageContext,
+    };
+    use crate::declare_message;
+    use crate::message::Message;
+    use crate::message::envelope::MessageEnvelope;
+    use core::future::poll_fn;
+    use core::task::Poll;
+
+    struct Control;
+    declare_message!(Control, ());
+
+    struct Data;
+    declare_message!(Data, ());
+
+    unsafe fn noop_dispatch(_: DispatchContextPtr<'_>, _: DispatchedActorMessageContext, _: *mut ()) {
+        unreachable!("the lane channel never invokes the dispatcher");
+    }
+
+    fn dispatched<M: Message>(message: M) -> DispatchedActorMessage {
+        // SAFETY: the dispatcher is never invoked by the channel under test; the
+        //         envelope carries an `M` built right here.
+        unsafe {
+            DispatchedActorMessage::new(
+                ActorMessageDispatcher::new(noop_dispatch),
+                DispatchedActorMessageContext::of(MessageEnvelope::new(message, None)),
+            )
+        }
+    }
+
+    #[derive(Default, Clone, Copy, Debug)]
+    struct ControlFirstRouter;
+
+    impl ActorMessagePriorityRouter for ControlFirstRouter {
+        fn priority(&self, dispatched: &DispatchedActorMessage) -> usize {
+            if dispatched.envelope().rtti() == Control::RTTI {
+                0
+            } else {
+                1
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn priority_lane_drains_before_lower_lane() {
+        let (channel, mut mailbox) =
+            TokioMpscMultiLineActorChannel::<2, _>::new_all_bounded(8, ControlFirstRouter);
+
+        // Data (lane 1) is enqueued first.
+        channel.prepare_send(dispatched(Data)).send().await.unwrap();
+
+        // Control (lane 0) is enqueued second, but must come out first.
+        channel
+            .prepare_send(dispatched(Control))
+            .send()
+            .await
+            .unwrap();
+
+        let first = mailbox.receive().await.expect("a message");
+        assert_eq!(first.envelope().rtti(), Control::RTTI, "lane 0 must win");
+
+        let second = mailbox.receive().await.expect("a message");
+        assert_eq!(second.envelope().rtti(), Data::RTTI);
+    }
+
+    #[tokio::test]
+    async fn single_lane_is_fifo() {
+        let (channel, mut mailbox) = TokioMpscActorChannel::new_bounded(8);
+
+        channel.prepare_send(dispatched(Data)).send().await.unwrap();
+        channel
+            .prepare_send(dispatched(Control))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mailbox.receive().await.unwrap().envelope().rtti(),
+            Data::RTTI
+        );
+        assert_eq!(
+            mailbox.receive().await.unwrap().envelope().rtti(),
+            Control::RTTI
+        );
+    }
+
+    #[tokio::test]
+    async fn per_lane_backpressure() {
+        let (channel, _mailbox) =
+            TokioMpscMultiLineActorChannel::<2, _>::new_all_bounded(1, ControlFirstRouter);
+
+        channel.prepare_send(dispatched(Data)).try_send().unwrap();
+        match channel.prepare_send(dispatched(Data)).try_send() {
+            Err(ActorChannelSendError::MailboxFull) => {}
+            other => panic!("expected MailboxFull, got {other:?}"),
+        }
+
+        channel.prepare_send(dispatched(Control)).try_send().unwrap();
+    }
+
+    #[tokio::test]
+    async fn out_of_range_lane_is_unroutable() {
+        #[derive(Default)]
+        struct AlwaysLaneFive;
+        impl ActorMessagePriorityRouter for AlwaysLaneFive {
+            fn priority(&self, _: &DispatchedActorMessage) -> usize {
+                5
+            }
+        }
+
+        let (channel, _mailbox) =
+            TokioMpscMultiLineActorChannel::<2, _>::new_all_bounded(1, AlwaysLaneFive);
+
+        match channel.prepare_send(dispatched(Data)).try_send() {
+            Err(ActorChannelSendError::Unroutable) => {}
+            other => panic!("expected Unroutable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn receive_is_cancel_safe() {
+        let (channel, mut mailbox) =
+            TokioMpscMultiLineActorChannel::<2, _>::new_all_bounded(8, ControlFirstRouter);
+
+        {
+            let mut fut = core::pin::pin!(mailbox.receive());
+            let polled = poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await;
+            assert!(matches!(polled, Poll::Pending));
+            drop(fut);
+        }
+
+        channel
+            .prepare_send(dispatched(Control))
+            .send()
+            .await
+            .unwrap();
+        let got = mailbox.receive().await.expect("a message");
+        assert_eq!(got.envelope().rtti(), Control::RTTI);
+    }
+}
