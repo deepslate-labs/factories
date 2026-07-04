@@ -28,6 +28,7 @@ pub(crate) mod obs;
 /// Behind the `capture` feature.
 #[cfg(feature = "capture")]
 pub mod capture;
+mod util;
 
 /// Method-style message handlers: marks an inherent impl block, every
 /// `#[handler]` method additionally becomes a message handler. See the macro

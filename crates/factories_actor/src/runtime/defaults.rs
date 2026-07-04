@@ -18,7 +18,7 @@
 //!   component explicitly.
 
 /// Default channel:
-/// [`TokioMpscActorChannel`](crate::runtime::tokio::TokioMpscActorChannel), a
+/// [`TokioMpscActorChannel`](crate::runtime::tokio::TokioMpscMultiLineActorChannel), a
 /// cancellation-safe `tokio::sync::mpsc` mailbox.
 ///
 /// Requires the `tokio-runtime` feature.

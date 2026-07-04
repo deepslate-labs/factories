@@ -15,5 +15,6 @@ mod channel;
 #[cfg(feature = "tokio-runtime")]
 pub use channel::{
     TokioMpscActorChannel, TokioMpscActorMailbox, TokioMpscChannelCapacity,
-    TokioMpscChannelOptions, TokioMpscChannelSendable,
+    TokioMpscChannelOptions, TokioMpscChannelSendable, TokioMpscMultiLineActorChannel,
+    TokioMpscMultilaneActorMailbox,
 };

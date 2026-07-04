@@ -12,5 +12,6 @@ pub mod init;
 pub mod lock;
 pub mod loop_support;
 pub mod result;
+pub mod routing;
 pub mod sequential_loop;
 pub mod template;

@@ -1,32 +1,29 @@
-#![cfg(all(
-    feature = "tokio-runtime",
-    feature = "tokio-answer"
-))]
+#![cfg(all(feature = "tokio-runtime", feature = "tokio-answer"))]
 
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
 use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
 use factories_actor::actor::event::{DefaultMailboxDriver, EventContext, EventDriver};
+use factories_actor::actor::extension::ExtensionSet;
 use factories_actor::actor::handle::{
     AskError, Calling, MessageCall, TypedActorHandle, WeakActorHandle,
 };
+use factories_actor::actor::lifecycle::{StopReason, TerminationKind, TerminationReason};
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::state::{LifecycleState, SharedActorState};
-use factories_actor::actor::work::IntoRunLoopWork;
-use factories_actor::actor::lifecycle::{StopReason, TerminationKind, TerminationReason};
 use factories_actor::actor::supervision::Terminated;
+use factories_actor::actor::work::IntoRunLoopWork;
 use factories_actor::actor::{
     AccessMode, Actor, ActorContext, ActorInit, ActorRunLoop, LockStrategy, MessageHandler,
     StaticOnlyBinder,
 };
 use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
-use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
+use factories_actor::runtime::tokio::TokioMpscActorChannel;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::{
     ActorLauncher, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
 };
-use factories_actor::actor::extension::ExtensionSet;
 use factories_actor::{declare_actor_rtti, declare_message, declare_static_async_dispatcher};
 // ---------------------------------------------------------------------------
 // Test actor: Greeter - written fully by hand. This is the manual path the
@@ -116,7 +113,8 @@ declare_message!(Greet, String);
 impl MessageHandler<Greet> for Greeter {
     type AccessMode = Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Greeter, Greet> = declare_static_async_dispatcher!(Greeter, Greet, |ctx| async move {
+    const DISPATCHER: StaticDispatcher<Greeter, Greet> =
+        declare_static_async_dispatcher!(Greeter, Greet, |ctx| async move {
             let (guard, message, answer) = ctx.into_parts();
 
             let reply = format!("{} {}", guard.greeting, message.name);
@@ -907,7 +905,8 @@ declare_message!(Bump, u32);
 impl MessageHandler<Bump> for Tally {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Tally, Bump> = declare_static_async_dispatcher!(Tally, Bump, |ctx| async move {
+    const DISPATCHER: StaticDispatcher<Tally, Bump> =
+        declare_static_async_dispatcher!(Tally, Bump, |ctx| async move {
             let (mut guard, message, answer) = ctx.into_parts();
             guard.total += message.0;
             if let Some(answer) = answer {
@@ -983,7 +982,10 @@ async fn weak_handle_upgrades_while_alive_and_fails_after_death() {
     let weak: WeakActorHandle<Tally> = handle.downgrade();
 
     // While a strong handle is alive, the weak handle upgrades.
-    assert!(weak.upgrade().is_some(), "upgrades while the actor is alive");
+    assert!(
+        weak.upgrade().is_some(),
+        "upgrades while the actor is alive"
+    );
 
     // Dropping the last strong handle closes the mailbox; the actor dies and the
     // identity's strong count hits zero, so the weak handle no longer upgrades.
@@ -1040,7 +1042,8 @@ declare_message!(Tick, ());
 impl MessageHandler<Tick> for Ticker {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Ticker, Tick> = declare_static_async_dispatcher!(Ticker, Tick, |ctx| async move {
+    const DISPATCHER: StaticDispatcher<Ticker, Tick> =
+        declare_static_async_dispatcher!(Ticker, Tick, |ctx| async move {
             // Grab the (lock-free) extension before decomposing the context.
             let actor_cx = ctx.actor_context();
             let (mut guard, _message, answer) = ctx.into_parts();
@@ -1193,7 +1196,8 @@ declare_message!(Ping, ());
 impl MessageHandler<Ping> for Hooked {
     type AccessMode = lock::Exclusive;
 
-    const DISPATCHER: StaticDispatcher<Hooked, Ping> = declare_static_async_dispatcher!(Hooked, Ping, |ctx| async move {
+    const DISPATCHER: StaticDispatcher<Hooked, Ping> =
+        declare_static_async_dispatcher!(Hooked, Ping, |ctx| async move {
             let actor_cx = ctx.actor_context();
             let (_guard, _message, answer) = ctx.into_parts();
             actor_cx.shared_data().record("ping");
@@ -1233,7 +1237,10 @@ async fn lifecycle_hooks_run_in_order() {
         "on_stop runs on a clean drain with the Finished reason"
     );
     assert!(
-        matches!(state.termination_reason(), Some(TerminationReason::Finished)),
+        matches!(
+            state.termination_reason(),
+            Some(TerminationReason::Finished)
+        ),
         "a clean drain records the Finished termination reason"
     );
 }
