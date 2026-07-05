@@ -113,6 +113,9 @@ let value = counter.get().await?;     // ask: await the answer
 `.blocking_tell()` / `.blocking_ask()` for use off an async runtime. You'll mostly
 write `.tell().await` and the bare `.await`.)
 
+`.try_tell()` enqueues if there is room and fails immediately
+(e.g. `MailboxFull`) instead of waiting.
+
 For a handler with fields, the field parameters become the method's arguments and the
 message is built for you:
 

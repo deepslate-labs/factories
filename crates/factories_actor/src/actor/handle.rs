@@ -326,6 +326,13 @@ pub trait Calling: sealed::Sealed + IntoFuture {
     /// Send the message without awaiting a reply.
     fn tell(self) -> impl Future<Output = ActorChannelSendResult>;
 
+    /// Send the message without awaiting a reply, without blocking or awaiting.
+    ///
+    /// Enqueues if there is room and fails immediately otherwise (e.g.
+    /// [`MailboxFull`](ActorChannelSendError::MailboxFull) /
+    /// [`ActorDead`](ActorChannelSendError::ActorDead)).
+    fn try_tell(self) -> ActorChannelSendResult;
+
     /// Send the message without awaiting a reply, blocking the thread.
     fn blocking_tell(self) -> ActorChannelSendResult;
 
@@ -381,6 +388,10 @@ where
         self.handle.tell(self.message).send()
     }
 
+    fn try_tell(self) -> ActorChannelSendResult {
+        self.handle.tell(self.message).try_send()
+    }
+
     fn blocking_tell(self) -> ActorChannelSendResult {
         self.handle.tell(self.message).blocking_send()
     }
@@ -416,6 +427,17 @@ impl<T: Calling> MessageCall<T> {
     /// Send the message without awaiting a reply.
     pub fn tell(self) -> impl Future<Output = ActorChannelSendResult> {
         self.0.tell()
+    }
+
+    /// Send the message without awaiting a reply, without blocking or awaiting.
+    ///
+    /// Enqueues if there is room and fails immediately otherwise (e.g.
+    /// [`MailboxFull`](ActorChannelSendError::MailboxFull)). This is the
+    /// sanctioned synchronous fire-and-forget: callable from non-async
+    /// contexts (a sync handler, a callback) without a runtime handle and
+    /// without blocking a thread.
+    pub fn try_tell(self) -> ActorChannelSendResult {
+        self.0.try_tell()
     }
 
     /// Send the message without awaiting a reply, blocking the thread.

@@ -177,6 +177,10 @@ impl<'a, M: Message> Calling for ErasedCall<'a, M> {
         self.sendable(None).send()
     }
 
+    fn try_tell(self) -> ActorChannelSendResult {
+        self.sendable(None).try_send()
+    }
+
     fn blocking_tell(self) -> ActorChannelSendResult {
         self.sendable(None).blocking_send()
     }
