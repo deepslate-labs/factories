@@ -195,10 +195,14 @@ can move it across threads and share it freely.
 
 ## Thread-local protocols
 
-If your actors run on a single thread and their messages aren't `Send`, write
-`#[protocol(local)]`. The trait and its generic-bound surface are identical; the
-only difference is the erased handle, which wraps an `AnyLocalActorHandle` and is
-therefore `!Send`:
+If your actors run on a single thread and their messages or answers aren't
+`Send`, write `#[protocol(local)]`. The trait and its generic-bound surface are
+identical; two things differ. The erased handle wraps an `AnyLocalActorHandle`
+and is therefore `!Send`. And the methods return a `LocalMessageCall` (the
+`LocalCalling` surface) instead of a `MessageCall`: the same verbs, but the
+futures carry no declared `Send` bound - a shared protocol promises `Send`
+futures, which a `!Send` answer cannot honor (see chapter 3's note on the
+`Send` guarantee).
 
 ```rust
 #[protocol(local)]

@@ -116,6 +116,17 @@ write `.tell().await` and the bare `.await`.)
 `.try_tell()` enqueues if there is room and fails immediately
 (e.g. `MailboxFull`) instead of waiting.
 
+**The `Send` guarantee.** Every future this surface returns - the tell future
+and the ask future alike - is declared `Send`, so calls can be awaited inside
+`tokio::spawn` and anything else that demands `Send` futures. The price is a
+bound: the message's *answer* type must be `Send` for the calling methods to
+exist (the message itself needs no bound - it travels inside the framework's
+thread-safe dispatch carrier, runtime-checked at the channel boundary). For
+`!Send` answers, the thread-local twin surface -
+`TypedActorHandle::call_local`, returning a `LocalMessageCall`, and
+`#[protocol(local)]` (chapter 9) - keeps the exact same verbs with no `Send`
+promised, mirroring tokio's `spawn` / `spawn_local` split.
+
 For a handler with fields, the field parameters become the method's arguments and the
 message is built for you:
 
