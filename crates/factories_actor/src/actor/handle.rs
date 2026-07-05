@@ -170,9 +170,32 @@ impl<A: Actor + ?Sized> TypedActorHandle<A> {
     ) -> MessageCall<impl Calling<Output = Result<M::Answer, AskError>> + use<'_, A, M>>
     where
         A: MessageHandler<M>,
+        M::Answer: Send,
     {
         let handle = self;
         MessageCall(PreparedCall {
+            handle,
+            message,
+            ask_gen: move |message: M| {
+                let AskSendable {
+                    sendable, receive, ..
+                } = handle.ask(message);
+                exchange_parts(sendable.send(), receive)
+            },
+        })
+    }
+
+    /// Prepare a typed call to this actor on the thread-local surface.
+    #[cfg(feature = "tokio-answer")]
+    pub fn call_local<M: Message>(
+        &self,
+        message: M,
+    ) -> LocalMessageCall<impl LocalCalling<Output = Result<M::Answer, AskError>> + use<'_, A, M>>
+    where
+        A: MessageHandler<M>,
+    {
+        let handle = self;
+        LocalMessageCall(PreparedCall {
             handle,
             message,
             ask_gen: move |message: M| handle.ask(message).exchange(),
@@ -283,6 +306,15 @@ unsafe impl<'a, M: Message, S: ActorChannelSendable<'a>> Send for AskSendable<'a
 unsafe impl<'a, M: Message, S: ActorChannelSendable<'a>> Sync for AskSendable<'a, M, S> where M: Sync
 {}
 
+#[cfg(feature = "tokio-answer")]
+async fn exchange_parts<M: Message>(
+    send: impl Future<Output = ActorChannelSendResult> + Send,
+    receive: AnswerReceiver<M>,
+) -> Result<M::Answer, AskError> {
+    send.await?;
+    receive.recv().await.ok_or(AskError::NoReply)
+}
+
 #[derive(Debug, Error)]
 pub enum AskError {
     #[error(transparent)]
@@ -313,13 +345,59 @@ pub(crate) mod sealed {
 
 /// The prepared-call operations a [`MessageCall`] forwards to.
 ///
-/// Sealed - implemented only by the framework's prepared-call type. The
+/// Sealed - implemented only by the framework's prepared-call types. The
 /// [`IntoFuture`] supertrait is the trick that keeps the ask unboxed: the
 /// channel's future is unnameable, so it travels as this type's
 /// [`IntoFuture::IntoFuture`] and the surface [`MessageCall`] just relays it.
+///
+/// # The `Send` guarantee
+///
+/// Every future on this surface is declared `Send`: the tell future by its
+/// return type, the ask future by the `IntoFuture<IntoFuture: Send>`
+/// supertrait bound. Async Rust overwhelmingly assumes `Send` futures
+/// (`tokio::spawn`, work-stealing executors, `Send`-bounded combinators), and
+/// the futures *are* structurally `Send` whenever message and answer are - so
+/// the surface promises it outright. The cost is deliberate over-constraint:
+/// a call whose message or answer is `!Send` cannot use this surface. For
+/// those, use the thread-local twin [`LocalCalling`] (surfaced by
+/// [`LocalMessageCall`] via [`TypedActorHandle::call_local`] and
+/// `#[protocol(local)]`), mirroring tokio's `spawn` / `spawn_local` split.
+// TODO(RTN): once return-type notation is stable, these declared `Send`
+// bounds can relax into caller-side `T::tell(..): Send` bounds, letting one
+// unbounded surface serve both worlds at zero cost.
 #[cfg(feature = "tokio-answer")]
 #[allow(private_bounds)]
-pub trait Calling: sealed::Sealed + IntoFuture {
+pub trait Calling: sealed::Sealed + IntoFuture<IntoFuture: Send> {
+    /// Sends the message and waits for the reply.
+    fn ask(self) -> <Self as IntoFuture>::IntoFuture;
+
+    /// Send the message without awaiting a reply.
+    ///
+    /// The returned future is guaranteed `Send` (see the trait docs).
+    fn tell(self) -> impl Future<Output = ActorChannelSendResult> + Send;
+
+    /// Send the message without awaiting a reply, without blocking or awaiting.
+    ///
+    /// Enqueues if there is room and fails immediately otherwise (e.g.
+    /// [`MailboxFull`](ActorChannelSendError::MailboxFull) /
+    /// [`ActorDead`](ActorChannelSendError::ActorDead)).
+    fn try_tell(self) -> ActorChannelSendResult;
+
+    /// Send the message without awaiting a reply, blocking the thread.
+    fn blocking_tell(self) -> ActorChannelSendResult;
+
+    /// Perform the ask exchange, blocking the thread.
+    fn blocking_ask(self) -> <Self as IntoFuture>::Output;
+}
+
+/// The thread-local twin of [`Calling`]: the same verbs, without the `Send`
+/// guarantee on the futures.
+///
+/// [`Calling`] deliberately promises `Send` futures, which transitively
+/// requires `Send` messages and answers.
+#[cfg(feature = "tokio-answer")]
+#[allow(private_bounds)]
+pub trait LocalCalling: sealed::Sealed + IntoFuture {
     /// Sends the message and waits for the reply.
     fn ask(self) -> <Self as IntoFuture>::IntoFuture;
 
@@ -328,9 +406,7 @@ pub trait Calling: sealed::Sealed + IntoFuture {
 
     /// Send the message without awaiting a reply, without blocking or awaiting.
     ///
-    /// Enqueues if there is room and fails immediately otherwise (e.g.
-    /// [`MailboxFull`](ActorChannelSendError::MailboxFull) /
-    /// [`ActorDead`](ActorChannelSendError::ActorDead)).
+    /// See [`Calling::try_tell`]: the sanctioned synchronous fire-and-forget.
     fn try_tell(self) -> ActorChannelSendResult;
 
     /// Send the message without awaiting a reply, blocking the thread.
@@ -378,6 +454,35 @@ where
     A: Actor + MessageHandler<M> + ?Sized,
     M: Message,
     C: FnOnce(M) -> Fut,
+    Fut: Future<Output = Result<M::Answer, AskError>> + Send + 'a,
+{
+    fn ask(self) -> <Self as IntoFuture>::IntoFuture {
+        self.into_future()
+    }
+
+    fn tell(self) -> impl Future<Output = ActorChannelSendResult> + Send {
+        self.handle.tell(self.message).send()
+    }
+
+    fn try_tell(self) -> ActorChannelSendResult {
+        self.handle.tell(self.message).try_send()
+    }
+
+    fn blocking_tell(self) -> ActorChannelSendResult {
+        self.handle.tell(self.message).blocking_send()
+    }
+
+    fn blocking_ask(self) -> Result<M::Answer, AskError> {
+        self.handle.ask(self.message).blocking_exchange()
+    }
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<'a, A, M, C, Fut> LocalCalling for PreparedCall<'a, A, M, C>
+where
+    A: Actor + MessageHandler<M> + ?Sized,
+    M: Message,
+    C: FnOnce(M) -> Fut,
     Fut: Future<Output = Result<M::Answer, AskError>> + 'a,
 {
     fn ask(self) -> <Self as IntoFuture>::IntoFuture {
@@ -420,22 +525,19 @@ impl<T: Calling> MessageCall<T> {
     }
 
     /// Sends the message and awaits the reply.
-    pub fn ask(self) -> impl Future<Output = <T as IntoFuture>::Output> {
+    pub fn ask(self) -> impl Future<Output = <T as IntoFuture>::Output> + Send {
         self.0.ask()
     }
 
     /// Send the message without awaiting a reply.
-    pub fn tell(self) -> impl Future<Output = ActorChannelSendResult> {
+    pub fn tell(self) -> impl Future<Output = ActorChannelSendResult> + Send {
         self.0.tell()
     }
 
     /// Send the message without awaiting a reply, without blocking or awaiting.
     ///
     /// Enqueues if there is room and fails immediately otherwise (e.g.
-    /// [`MailboxFull`](ActorChannelSendError::MailboxFull)). This is the
-    /// sanctioned synchronous fire-and-forget: callable from non-async
-    /// contexts (a sync handler, a callback) without a runtime handle and
-    /// without blocking a thread.
+    /// [`MailboxFull`](ActorChannelSendError::MailboxFull)).
     pub fn try_tell(self) -> ActorChannelSendResult {
         self.0.try_tell()
     }
@@ -451,6 +553,68 @@ impl<T: Calling> MessageCall<T> {
     }
 }
 
+/// A prepared thread-local call to an actor that has not yet been dispatched.
+///
+/// The [`MessageCall`] twin for the [`LocalCalling`] surface: identical verbs
+/// and semantics, but none of the futures carry a declared `Send` bound - they
+/// are `Send` exactly when their parts are. Built by
+/// [`TypedActorHandle::call_local`] and by the methods `#[protocol(local)]`
+/// generates.
+#[cfg(feature = "tokio-answer")]
+#[must_use = "a LocalMessageCall does nothing until it is awaited, told, or blocked on"]
+pub struct LocalMessageCall<T>(T);
+
+#[cfg(feature = "tokio-answer")]
+impl<T: IntoFuture> IntoFuture for LocalMessageCall<T> {
+    type Output = T::Output;
+    type IntoFuture = T::IntoFuture;
+
+    fn into_future(self) -> T::IntoFuture {
+        self.0.into_future()
+    }
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<T: LocalCalling> LocalMessageCall<T> {
+    /// Wrap a prepared thread-local call.
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+
+    /// Sends the message and awaits the reply.
+    pub fn ask(self) -> impl Future<Output = <T as IntoFuture>::Output> {
+        self.0.ask()
+    }
+
+    /// Send the message without awaiting a reply.
+    pub fn tell(self) -> impl Future<Output = ActorChannelSendResult> {
+        self.0.tell()
+    }
+
+    /// Send the message without awaiting a reply, without blocking or awaiting.
+    pub fn try_tell(self) -> ActorChannelSendResult {
+        self.0.try_tell()
+    }
+
+    /// Send the message without awaiting a reply, blocking the thread.
+    pub fn blocking_tell(self) -> ActorChannelSendResult {
+        self.0.blocking_tell()
+    }
+
+    /// Perform the ask exchange, blocking the thread.
+    pub fn blocking_ask(self) -> <T as IntoFuture>::Output {
+        self.0.blocking_ask()
+    }
+}
+
+/// The untyped, thread-local actor handle: type-erased like
+/// [`AnyActorHandle`], but without the `Send + Sync` demand on the actor's
+/// channel and error types - so the handle itself never crosses threads:
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<factories_actor::actor::handle::AnyLocalActorHandle>(); # Fails to compile
+/// ```
 #[derive(Debug, Clone)]
 pub struct AnyLocalActorHandle(Arc<dyn AnyActorIdentity>);
 
@@ -497,6 +661,12 @@ impl TryFrom<AnyLocalActorHandle> for AnyActorHandle {
     }
 }
 
+/// The untyped, thread-safe actor handle: fully type-erased, `Send + Sync`.
+///
+/// ```
+/// fn assert_send_sync<T: Send + Sync>() {}
+/// assert_send_sync::<factories_actor::actor::handle::AnyActorHandle>();
+/// ```
 #[derive(Debug, Clone)]
 pub struct AnyActorHandle(Arc<dyn AnyActorIdentity + Send + Sync + 'static>);
 

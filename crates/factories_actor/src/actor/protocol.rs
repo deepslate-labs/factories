@@ -23,13 +23,15 @@
 //!
 //! # Dispatch
 //!
-//! Every protocol send - whether from the static generic-bound surface (a typed
-//! handle) or from the erased handle - routes through the object-safe
+//! Every protocol send from the erased handle routes through the object-safe
 //! [`ErasedDispatch`] trait: one [`ErasedCall`] borrows `&dyn ErasedDispatch`
-//! plus the cached dispatcher, so the generated methods all return the same
-//! [`MessageCall<ErasedCall<…>>`](crate::actor::handle::MessageCall). The
-//! `#[protocol]` attribute generates the handle, the methods, and the
-//! construction `impl`s on top of these primitives.
+//! plus the cached dispatcher. Shared protocols surface it as a
+//! [`MessageCall`](crate::actor::handle::MessageCall) - the `Send`-guaranteed
+//! [`Calling`] surface - while `local` protocols surface the *same* call type
+//! as a [`LocalMessageCall`](crate::actor::handle::LocalMessageCall) (the
+//! unbounded [`LocalCalling`] twin), since a `!Send` answer cannot promise a
+//! `Send` ask future. The `#[protocol]` attribute generates the handle, the
+//! methods, and the construction `impl`s on top of these primitives.
 
 use crate::actor::channel::DynActorChannelSendable;
 use crate::actor::dispatch::DispatchedActorMessage;
@@ -41,7 +43,7 @@ use crate::actor::channel::{ActorChannelSendResult, PinnedActorChannelSendFuture
 #[cfg(feature = "tokio-answer")]
 use crate::actor::dispatch::{ActorMessageDispatcher, DispatchedActorMessageContext};
 #[cfg(feature = "tokio-answer")]
-use crate::actor::handle::{AskError, Calling};
+use crate::actor::handle::{AskError, Calling, LocalCalling};
 #[cfg(feature = "tokio-answer")]
 use crate::message::Message;
 #[cfg(feature = "tokio-answer")]
@@ -106,11 +108,14 @@ unsafe fn dispatched<M: Message>(
 /// and the message itself.
 ///
 /// The single call type behind every protocol method (shared and `local` alike).
-/// It implements [`Calling`], so the generated methods wrap it in a
-/// [`MessageCall`](crate::actor::handle::MessageCall) and the surface is
-/// identical to a typed handle's call: `.await`, `.tell()`, `.ask()`, and the
-/// blocking variants. `Send`-ness of its futures falls out of the reply type, so
-/// one type serves both shared and thread-local protocols.
+/// `Send`-ness of its futures falls out of the reply type, so one type serves
+/// both shared and thread-local protocols - through two surfaces: it
+/// implements [`Calling`] where the answer is `Send` (shared protocols wrap it
+/// in a [`MessageCall`](crate::actor::handle::MessageCall)) and [`LocalCalling`]
+/// unconditionally (`local` protocols wrap it in a
+/// [`LocalMessageCall`](crate::actor::handle::LocalMessageCall)). Either way
+/// the surface is identical to a typed handle's call: `.await`, `.tell()`,
+/// `.ask()`, `.try_tell()`, and the blocking variants.
 #[cfg(feature = "tokio-answer")]
 #[must_use = "a protocol call does nothing until it is awaited, told, or blocked on"]
 pub struct ErasedCall<'a, M: Message> {
@@ -168,7 +173,35 @@ impl<'a, M: Message> IntoFuture for ErasedCall<'a, M> {
 impl<M: Message> crate::actor::handle::sealed::Sealed for ErasedCall<'_, M> {}
 
 #[cfg(feature = "tokio-answer")]
-impl<'a, M: Message> Calling for ErasedCall<'a, M> {
+impl<'a, M: Message> Calling for ErasedCall<'a, M>
+where
+    M::Answer: Send,
+{
+    fn ask(self) -> <Self as IntoFuture>::IntoFuture {
+        self.into_future()
+    }
+
+    fn tell(self) -> impl Future<Output = ActorChannelSendResult> + Send {
+        self.sendable(None).send()
+    }
+
+    fn try_tell(self) -> ActorChannelSendResult {
+        self.sendable(None).try_send()
+    }
+
+    fn blocking_tell(self) -> ActorChannelSendResult {
+        self.sendable(None).blocking_send()
+    }
+
+    fn blocking_ask(self) -> Result<M::Answer, AskError> {
+        let (tx, rx) = answer_channel::<M>();
+        self.sendable(Some(tx)).blocking_send()?;
+        rx.blocking_recv().ok_or(AskError::NoReply)
+    }
+}
+
+#[cfg(feature = "tokio-answer")]
+impl<'a, M: Message> LocalCalling for ErasedCall<'a, M> {
     fn ask(self) -> <Self as IntoFuture>::IntoFuture {
         self.into_future()
     }
