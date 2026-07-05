@@ -80,29 +80,39 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let message = quote!(#krate::message::Message);
 
     // Per-message fragments. Trait declarations need the trailing `;`; the impls
-    // carry a body instead. The return type is `MessageCall<impl Calling<…>>` -
-    // a nested RPITIT, so each impl supplies its own inner: the typed impl reuses
-    // `TypedActorHandle::call` (unboxed, zero-cost), the erased impl wraps an
-    // `ErasedCall`. Both read as `MessageCall<…>`.
+    // carry a body instead. The return type is `MessageCall<impl Calling<…>>`
+    // for shared protocols and `LocalMessageCall<impl LocalCalling<…>>` for
+    // `local` ones (a `!Send` answer cannot promise the `Send` futures the
+    // shared surface guarantees). It is a nested RPITIT, so each impl supplies
+    // its own inner: the typed impl reuses `TypedActorHandle::call` /
+    // `call_local` (unboxed, zero-cost), the erased impl wraps an `ErasedCall`.
     let trait_methods = messages.iter().map(|m| {
-        let sig = method_signature(m, &handle, &message);
+        let sig = method_signature(m, &handle, &message, locality);
         quote!(#sig;)
     });
     let typed_methods = messages.iter().map(|m| {
-        let sig = method_signature(m, &handle, &message);
+        let sig = method_signature(m, &handle, &message, locality);
         let binding = &m.binding;
         // Reuse the typed handle's own call path - nothing erased, nothing boxed.
-        quote!(#sig { self.call(#binding) })
+        let call = match locality {
+            Locality::Shared => quote!(call),
+            Locality::Local => quote!(call_local),
+        };
+        quote!(#sig { self.#call(#binding) })
     });
     let handle_methods = messages.iter().map(|m| {
-        let sig = method_signature(m, &handle, &message);
+        let sig = method_signature(m, &handle, &message, locality);
         let binding = &m.binding;
         let index = m.index;
+        let call_ty = match locality {
+            Locality::Shared => quote!(#handle::MessageCall),
+            Locality::Local => quote!(#handle::LocalMessageCall),
+        };
         quote! {
             #sig {
                 // SAFETY: `dispatchers[#index]` was bound for this message on the
                 //         actor behind `inner` when this handle was constructed.
-                #handle::MessageCall::new(unsafe {
+                #call_ty::new(unsafe {
                     #actor::protocol::ErasedCall::new(&self.inner, self.dispatchers[#index], #binding)
                 })
             }
@@ -328,21 +338,37 @@ fn collect_messages(input: &ItemTrait) -> Vec<ProtocolMessage> {
 }
 
 /// The shared method signature, uniform across both impls:
-/// `fn name(&self, binding: Msg) -> MessageCall<impl Calling<Output = …>>`.
+/// `fn name(&self, binding: Msg) -> MessageCall<impl Calling<Output = …>>`
+/// (shared protocols, `Send`-guaranteed futures) or the
+/// `LocalMessageCall<impl LocalCalling<…>>` twin (`local` protocols, no `Send`
+/// guarantee).
 ///
-/// The nested `impl Calling` is a per-impl RPITIT, so the typed blanket impl can
-/// return `TypedActorHandle::call`'s unboxed `MessageCall` while the erased impl
-/// returns a `MessageCall<ErasedCall>` - both matching this written type.
-fn method_signature(m: &ProtocolMessage, handle: &TokenStream, message: &TokenStream) -> TokenStream {
+/// The nested `impl Calling` is a per-impl RPITIT, so the typed blanket impl
+/// can return `TypedActorHandle::call`'s / `call_local`'s unboxed inner call
+/// while the erased impl returns an `ErasedCall` - both matching this written
+/// type.
+fn method_signature(
+    m: &ProtocolMessage,
+    handle: &TokenStream,
+    message: &TokenStream,
+    locality: Locality,
+) -> TokenStream {
     let method = &m.method;
     let binding = &m.binding;
     let msg = &m.message;
+    let (call_ty, calling) = match locality {
+        Locality::Shared => (quote!(#handle::MessageCall), quote!(#handle::Calling)),
+        Locality::Local => (
+            quote!(#handle::LocalMessageCall),
+            quote!(#handle::LocalCalling),
+        ),
+    };
     quote! {
         fn #method(
             &self,
             #binding: #msg,
-        ) -> #handle::MessageCall<
-            impl #handle::Calling<
+        ) -> #call_ty<
+            impl #calling<
                 Output = ::core::result::Result<
                     <#msg as #message>::Answer,
                     #handle::AskError,
