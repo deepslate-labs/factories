@@ -16,6 +16,7 @@ use alloc::sync::Weak;
 use core::fmt::Display;
 use core::num::NonZeroUsize;
 use core::sync::atomic::AtomicUsize;
+use crate::actor::channel::ActorChannelSendResult;
 
 /// Source of process-unique [`ActorId`]s. Monotonic, so an id is never reused;
 /// starts at 1 so 0 is free to serve as the `Option<ActorId>` niche.
@@ -199,20 +200,34 @@ impl Subscription {
     /// Non-blocking delivery for the terminal `Drop` path (panic / task abort),
     /// where awaiting is impossible. Best-effort: a saturated mailbox drops the
     /// signal.
+    ///
+    /// If the watcher is gone already, this still considers invocation a success.
+    /// Failure is only indicated if the watcher is still alive but unable to
+    /// receive the message.
     pub(crate) fn deliver_now(
         &self,
         watched: ActorId,
         rtti: &'static ActorRtti,
         kind: TerminationKind,
-    ) {
+    ) -> ActorChannelSendResult {
         let Some((watcher, message)) = self.prepare(watched, rtti, kind) else {
-            return;
+            return Ok(());
         };
 
-        crate::obs::terminated_delivered(rtti.name(), watched, kind);
 
-        let _ = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
+        let result = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
             .try_send();
+        
+        match &result {
+            Ok(()) => {
+                crate::obs::terminated_delivered(rtti.name(), watched, kind);
+            }
+            Err(err) => {
+                crate::obs::terminated_delivery_failed(rtti.name(), watched, kind, err);
+            }
+        };
+        
+        result
     }
 }
 

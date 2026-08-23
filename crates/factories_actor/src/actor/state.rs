@@ -378,7 +378,7 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
 
         let id = self.id();
         for subscription in subscriptions {
-            subscription.deliver_now(id, A::RTTI, kind);
+            let _ = subscription.deliver_now(id, A::RTTI, kind);
         }
     }
 

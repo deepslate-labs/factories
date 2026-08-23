@@ -16,6 +16,7 @@
 //! - The actor is identified by fields, not a wrapping span; association is by
 //!   `actor.id` / `actor.name` plus the per-message span's causal parent chain.
 
+use crate::actor::channel::ActorChannelSendError;
 use crate::actor::lifecycle::TerminationKind;
 use crate::actor::supervision::ActorId;
 use core::future::Future;
@@ -141,10 +142,37 @@ pub(crate) fn terminated_delivered(watched: &'static str, id: ActorId, kind: Ter
         actor.name = watched,
         actor.id = id.as_usize() as u64,
         kind = ?kind,
-        "delivering terminated signal",
+        "delivered terminated signal",
     );
 }
 
 /// No-op without the `tracing` feature.
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn terminated_delivered(_: &'static str, _: ActorId, _: TerminationKind) {}
+
+/// Emit a `WARN` event if a `Terminated` signal could not be delivered to a still
+/// alive actor.
+#[cfg(feature = "tracing")]
+pub(crate) fn terminated_delivery_failed(
+    watched: &'static str,
+    id: ActorId,
+    kind: TerminationKind,
+    error: &ActorChannelSendError
+) {
+    tracing::warn!(
+        actor.name = watched,
+        actor.id = id.as_usize() as u64,
+        kind = ?kind,
+        %error,
+        "failed to deliver terminated signal",
+    );
+}
+
+/// No-op without the `tracing` feature.
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn terminated_delivery_failed(
+    _watched: &'static str,
+    _id: ActorId,
+    _kind: TerminationKind,
+    _error: &ActorChannelSendError
+) {}
