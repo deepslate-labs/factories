@@ -7,7 +7,7 @@ use crate::actor::dispatch::{DispatchedActorMessage, DispatchedActorMessageConte
 use crate::actor::identity::{ActorIdentity, AnyActorIdentity};
 use crate::actor::rtti::ActorRtti;
 use crate::actor::state::SharedActorState;
-use crate::actor::supervision::{Subscription, Terminated, ActorId};
+use crate::actor::supervision::{Subscription, Terminated, ActorId, WatchDeliveryPolicy};
 use crate::actor::task::ActorTaskHandle;
 use crate::actor::{Actor, MessageHandler};
 use crate::message::Message;
@@ -77,7 +77,23 @@ impl<A: Actor + ?Sized> TypedActorHandle<A> {
         A::Channel: Send + Sync,
         A::Error: Send + Sync,
     {
-        register_watch::<A>(self.downgrade().erase(), self.state().id(), watched, tag);
+        self.watch_with_policy(watched, tag, WatchDeliveryPolicy::default());
+    }
+
+    /// Watch `watched`: when it terminates, a [`Terminated`] signal is pushed
+    /// into *this* actor's mailbox according to the configured policy
+    /// (handled by its [`MessageHandler<Terminated>`]), carrying `tag` as the
+    /// correlation key.
+    ///
+    /// Unidirectional and non-owning: the watch keeps neither actor alive (this
+    /// actor is held weakly on the watched side).
+    pub fn watch_with_policy(&self, watched: &impl ActorHandle, tag: u64, delivery_policy: WatchDeliveryPolicy)
+    where
+        A: MessageHandler<Terminated> + 'static,
+        A::Channel: Send + Sync,
+        A::Error: Send + Sync,
+    {
+        register_watch::<A>(self.downgrade().erase(), self.state().id(), watched, tag, delivery_policy);
     }
 
     /// Stop watching `watched`: remove every subscription this actor registered
@@ -250,11 +266,12 @@ pub(crate) fn register_watch<A>(
     watcher_id: ActorId,
     watched: &impl ActorHandle,
     tag: u64,
+    delivery_policy: WatchDeliveryPolicy,
 ) where
     A: MessageHandler<Terminated> + ?Sized,
 {
     let dispatcher = <A as MessageHandler<Terminated>>::DISPATCHER.into_dispatcher();
-    let subscription = Subscription::new(watcher, watcher_id, dispatcher, tag);
+    let subscription = Subscription::new(watcher, watcher_id, dispatcher, tag, delivery_policy);
     // `identity()` (the sealed `ActorHandleBase`) is crate-internal, so the
     // `Subscription` type never appears in a public signature.
     watched.identity().add_subscription(subscription);

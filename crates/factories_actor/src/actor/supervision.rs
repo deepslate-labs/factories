@@ -5,6 +5,7 @@
 //! into A's mailbox as an ordinary message. Both sides are held weakly, so a
 //! watch keeps neither actor alive.
 
+use crate::actor::channel::ActorChannelSendResult;
 use crate::actor::dispatch::{
     ActorMessageDispatcher, DispatchedActorMessage, DispatchedActorMessageContext,
 };
@@ -16,7 +17,6 @@ use alloc::sync::Weak;
 use core::fmt::Display;
 use core::num::NonZeroUsize;
 use core::sync::atomic::AtomicUsize;
-use crate::actor::channel::ActorChannelSendResult;
 
 /// Source of process-unique [`ActorId`]s. Monotonic, so an id is never reused;
 /// starts at 1 so 0 is free to serve as the `Option<ActorId>` niche.
@@ -121,6 +121,45 @@ impl Terminated {
     }
 }
 
+/// The policy which configures under which circumstances a [`Terminated`] signal
+/// is delivered to a watcher.
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum WatchDeliveryPolicy {
+    /// Always deliver the signal.
+    ///
+    /// This is the default policy and may block the sender if the watcher's
+    /// mailbox is full. factories will always try to use async wait with
+    /// this policy, but if the notification is generated from the destructor
+    /// of an actor, this policy allows blocking the sender.
+    ///
+    /// While this is usually the expected behavior, it is possible to build
+    /// deadlocks with this mechanism. Where blocking is impossible outright,
+    /// the channel implementation may panic instead.
+    #[default]
+    Always,
+
+    /// Only deliver the signal if the watcher's mailbox is able to accept
+    /// the message immediately or if factories can wait non-blocking (asynchronously)
+    /// for mailbox space to free up.
+    ///
+    /// Using this policy means [`Terminated`] notifications may get lost if the watcher's
+    /// mailbox is full and the notification is generated from the destructor of an actor.
+    ///
+    /// Use with care as this policy may lead to the loss of termination notifications
+    /// and subsequently leak resources if not properly handled by the watcher.
+    WaitNonblockingOnly,
+
+    /// Only deliver the signal if the watcher's mailbox is able to accept it immediately
+    /// and never wait for mailbox space to free up (not asynchronously or synchronously).
+    ///
+    /// Using this policy means [`Terminated`] notifications may get lost if the watcher's
+    /// mailbox is full.
+    ///
+    /// Use with care as this policy may lead to the loss of termination notifications
+    /// and subsequently leak resources if not properly handled by the watcher.
+    NoWait,
+}
+
 /// A registered termination subscription, stored on the *watched* actor.
 ///
 /// Holds a weak reference to the watcher (so it never keeps the watcher alive)
@@ -132,6 +171,7 @@ pub(crate) struct Subscription {
     watcher_id: ActorId,
     dispatcher: ActorMessageDispatcher,
     tag: u64,
+    delivery_policy: WatchDeliveryPolicy,
 }
 
 impl Subscription {
@@ -140,12 +180,14 @@ impl Subscription {
         watcher_id: ActorId,
         dispatcher: ActorMessageDispatcher,
         tag: u64,
+        delivery_policy: WatchDeliveryPolicy,
     ) -> Self {
         Self {
             watcher,
             watcher_id,
             dispatcher,
             tag,
+            delivery_policy,
         }
     }
 
@@ -161,7 +203,10 @@ impl Subscription {
         watched: ActorId,
         rtti: &'static ActorRtti,
         kind: TerminationKind,
-    ) -> Option<(alloc::sync::Arc<dyn AnyActorIdentity + Send + Sync>, DispatchedActorMessage)> {
+    ) -> Option<(
+        alloc::sync::Arc<dyn AnyActorIdentity + Send + Sync>,
+        DispatchedActorMessage,
+    )> {
         let watcher = self.watcher.upgrade()?;
 
         let signal = Terminated::new(watched, rtti, kind, self.tag);
@@ -171,7 +216,10 @@ impl Subscription {
         //         `Terminated` dispatcher, so it dispatches a `Terminated`
         //         envelope onto the watcher's run loop.
         let message = unsafe {
-            DispatchedActorMessage::new(self.dispatcher, DispatchedActorMessageContext::of(envelope))
+            DispatchedActorMessage::new(
+                self.dispatcher,
+                DispatchedActorMessageContext::of(envelope),
+            )
         };
 
         Some((watcher, message))
@@ -186,48 +234,110 @@ impl Subscription {
         rtti: &'static ActorRtti,
         kind: TerminationKind,
     ) {
-        let Some((watcher, message)) = self.prepare(watched, rtti, kind) else {
-            return;
-        };
-
-        crate::obs::terminated_delivered(rtti.name(), watched, kind);
-
-        let _ = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
-            .send()
-            .await;
+        match self.delivery_policy {
+            WatchDeliveryPolicy::Always | WatchDeliveryPolicy::WaitNonblockingOnly => {
+                self.internal_deliver_waiting_async(watched, rtti, kind)
+                    .await;
+            }
+            WatchDeliveryPolicy::NoWait => {
+                self.internal_deliver_nonblocking(watched, rtti, kind);
+            }
+        }
     }
 
-    /// Non-blocking delivery for the terminal `Drop` path (panic / task abort),
-    /// where awaiting is impossible. Best-effort: a saturated mailbox drops the
-    /// signal.
-    ///
-    /// If the watcher is gone already, this still considers invocation a success.
-    /// Failure is only indicated if the watcher is still alive but unable to
-    /// receive the message.
+    /// Synchronous delivery for the terminal `Drop` path (panic / task abort),
+    /// where awaiting is impossible. The delivery policy decides what a full
+    /// mailbox means: [`Always`](WatchDeliveryPolicy::Always) blocks the
+    /// current thread until there is room (or the watcher dies), the other
+    /// policies drop the signal.
     pub(crate) fn deliver_now(
         &self,
         watched: ActorId,
         rtti: &'static ActorRtti,
         kind: TerminationKind,
-    ) -> ActorChannelSendResult {
+    ) {
+        match self.delivery_policy {
+            WatchDeliveryPolicy::Always => {
+                self.internal_deliver_waiting_blocking(watched, rtti, kind)
+            }
+            WatchDeliveryPolicy::WaitNonblockingOnly | WatchDeliveryPolicy::NoWait => {
+                self.internal_deliver_nonblocking(watched, rtti, kind);
+            }
+        }
+    }
+
+    async fn internal_deliver_waiting_async(
+        &self,
+        watched: ActorId,
+        rtti: &'static ActorRtti,
+        kind: TerminationKind,
+    ) {
         let Some((watcher, message)) = self.prepare(watched, rtti, kind) else {
-            return Ok(());
+            return;
         };
 
+        Self::handle_delivery_result(
+            watched,
+            rtti,
+            kind,
+            crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
+                .send()
+                .await,
+        );
+    }
 
-        let result = crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
-            .try_send();
-        
-        match &result {
+    fn internal_deliver_waiting_blocking(
+        &self,
+        watched: ActorId,
+        rtti: &'static ActorRtti,
+        kind: TerminationKind,
+    ) {
+        let Some((watcher, message)) = self.prepare(watched, rtti, kind) else {
+            return;
+        };
+
+        Self::handle_delivery_result(
+            watched,
+            rtti,
+            kind,
+            crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
+                .blocking_send(),
+        );
+    }
+
+    fn internal_deliver_nonblocking(
+        &self,
+        watched: ActorId,
+        rtti: &'static ActorRtti,
+        kind: TerminationKind,
+    ) {
+        let Some((watcher, message)) = self.prepare(watched, rtti, kind) else {
+            return;
+        };
+
+        Self::handle_delivery_result(
+            watched,
+            rtti,
+            kind,
+            crate::actor::channel::DynActorChannel::prepare_send(watcher.dyn_channel(), message)
+                .try_send(),
+        );
+    }
+
+    fn handle_delivery_result(
+        watched: ActorId,
+        rtti: &'static ActorRtti,
+        kind: TerminationKind,
+        result: ActorChannelSendResult,
+    ) {
+        match result {
             Ok(()) => {
                 crate::obs::terminated_delivered(rtti.name(), watched, kind);
             }
             Err(err) => {
-                crate::obs::terminated_delivery_failed(rtti.name(), watched, kind, err);
+                crate::obs::terminated_delivery_failed(rtti.name(), watched, kind, &err);
             }
-        };
-        
-        result
+        }
     }
 }
 
@@ -251,6 +361,10 @@ mod tests {
         let a = ActorId::new();
         let b = ActorId::new();
         assert!(b.as_usize() > a.as_usize(), "ids increase monotonically");
-        assert_ne!(a.as_usize(), 0, "0 is reserved as the `Option<ActorId>` niche");
+        assert_ne!(
+            a.as_usize(),
+            0,
+            "0 is reserved as the `Option<ActorId>` niche"
+        );
     }
 }

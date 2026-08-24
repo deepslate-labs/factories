@@ -119,7 +119,7 @@ pub mod prelude {
         AnyActorHandle, AnyLocalActorHandle, TypedActorHandle, WeakActorHandle,
     };
     pub use crate::actor::lifecycle::{StopReason, TerminationKind, TerminationReason};
-    pub use crate::actor::supervision::{ActorId, Terminated};
+    pub use crate::actor::supervision::{ActorId, Terminated, WatchDeliveryPolicy};
     pub use crate::actor::{Actor, ActorContext};
     pub use crate::actor::extension::{Extension, ExtensionSet};
     pub use crate::declare_extension;

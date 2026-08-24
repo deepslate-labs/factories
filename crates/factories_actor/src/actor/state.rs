@@ -370,7 +370,7 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
 
     /// Non-awaiting subscriber notification for the terminal `Drop` path (panic
     /// / task abort), where the async [`notify_subscribers`](Self::notify_subscribers)
-    /// could not run. Best-effort per subscriber.
+    /// could not run.
     pub(crate) fn notify_subscribers_now(&self) {
         let Some((kind, subscriptions)) = self.take_subscriptions() else {
             return;
@@ -378,7 +378,7 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
 
         let id = self.id();
         for subscription in subscriptions {
-            let _ = subscription.deliver_now(id, A::RTTI, kind);
+            subscription.deliver_now(id, A::RTTI, kind);
         }
     }
 
@@ -525,8 +525,9 @@ impl<A: Actor + ?Sized> Drop for DeadOnDropGuard<A> {
             crate::capture::record_died(&self.state);
         }
         // Fallback notification for the paths that skip the async terminal
-        // (panic / task abort): can't await here, so best-effort. The clean and
-        // failed paths already delivered (and drained) via the async
+        // (panic / task abort): can't await here, so each subscription's
+        // delivery policy picks blocking or best-effort. The clean and failed
+        // paths already delivered (and drained) via the async
         // `notify_subscribers`, making this a no-op for them.
         self.state.notify_subscribers_now();
         self.state.transition_dead();

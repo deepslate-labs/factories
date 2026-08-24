@@ -239,9 +239,16 @@ impl<'a> ActorChannelSendable<'a> for TokioMpscChannelSendable<'a> {
         }
 
         match self.sender {
-            Some(TokioMpscSender::Bounded(sender)) => sender
-                .blocking_send(self.message)
-                .map_err(|_| ActorChannelSendError::ActorDead),
+            Some(TokioMpscSender::Bounded(sender)) => {
+                // Footgun time: The reason this function allows blocking in a tokio runtime
+                // is that factories may blocking send messages from a destructor of an actor,
+                // which needs a blocking send if the watch policy requires.
+                tokio::task::block_in_place(move || {
+                    sender
+                        .blocking_send(self.message)
+                        .map_err(|_| ActorChannelSendError::ActorDead)
+                })
+            }
             Some(TokioMpscSender::Unbounded(sender)) => sender
                 .send(self.message)
                 .map_err(|_| ActorChannelSendError::ActorDead),
@@ -326,7 +333,11 @@ mod tests {
     struct Data;
     declare_message!(Data, ());
 
-    unsafe fn noop_dispatch(_: DispatchContextPtr<'_>, _: DispatchedActorMessageContext, _: *mut ()) {
+    unsafe fn noop_dispatch(
+        _: DispatchContextPtr<'_>,
+        _: DispatchedActorMessageContext,
+        _: *mut (),
+    ) {
         unreachable!("the lane channel never invokes the dispatcher");
     }
 
@@ -408,7 +419,10 @@ mod tests {
             other => panic!("expected MailboxFull, got {other:?}"),
         }
 
-        channel.prepare_send(dispatched(Control)).try_send().unwrap();
+        channel
+            .prepare_send(dispatched(Control))
+            .try_send()
+            .unwrap();
     }
 
     #[tokio::test]

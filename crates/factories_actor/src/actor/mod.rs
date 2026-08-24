@@ -24,6 +24,7 @@ pub mod supervision;
 pub mod task;
 pub mod work;
 
+use crate::actor::supervision::WatchDeliveryPolicy;
 /// Derive macro generating an [`Actor`] implementation together with its RTTI
 /// declaration. Configured via `#[actor(...)]`; omitted components fall back
 /// to [`runtime::defaults`](crate::runtime::defaults).
@@ -400,10 +401,7 @@ pub struct ActorContext<'a, A: Actor + ?Sized> {
 
 impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
     /// Create a context over the actor's shared state and weak self-reference.
-    pub fn new(
-        state: &'a SharedActorState<A>,
-        self_ref: &'a handle::WeakActorHandle<A>,
-    ) -> Self {
+    pub fn new(state: &'a SharedActorState<A>, self_ref: &'a handle::WeakActorHandle<A>) -> Self {
         Self { state, self_ref }
     }
 
@@ -441,7 +439,34 @@ impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
         A::Channel: Send + Sync,
         A::Error: Send + Sync,
     {
-        handle::register_watch::<A>(self.self_ref.clone().erase(), self.state.id(), watched, tag);
+        self.watch_with_policy(watched, tag, WatchDeliveryPolicy::default());
+    }
+
+    /// Watch `watched` from this actor: a [`Terminated`](supervision::Terminated)
+    /// tagged `tag` is pushed into this actor's mailbox according to the configured
+    /// policy when `watched` stops.
+    ///
+    /// The in-handler counterpart of
+    /// [`TypedActorHandle::watch`](handle::TypedActorHandle::watch): it uses this
+    /// actor's own weak self-reference, so no handle to self is needed. Requires
+    /// `Self: MessageHandler<Terminated>`.
+    pub fn watch_with_policy(
+        &self,
+        watched: &impl handle::ActorHandle,
+        tag: u64,
+        delivery_policy: WatchDeliveryPolicy,
+    ) where
+        A: MessageHandler<supervision::Terminated> + 'static,
+        A::Channel: Send + Sync,
+        A::Error: Send + Sync,
+    {
+        handle::register_watch::<A>(
+            self.self_ref.clone().erase(),
+            self.state.id(),
+            watched,
+            tag,
+            delivery_policy,
+        );
     }
 
     /// Stop watching `watched`: remove every subscription this actor registered

@@ -332,7 +332,7 @@ async fn terminated_delivery_emits_event() {
 
     let delivered = records_for("Cycle")
         .into_iter()
-        .find(|r| !r.is_span && r.field("message") == Some("delivering terminated signal"))
+        .find(|r| !r.is_span && r.field("message") == Some("delivered terminated signal"))
         .expect("terminated delivery event");
     assert_eq!(delivered.level, Level::DEBUG);
     assert_eq!(delivered.field("kind"), Some("Finished"));

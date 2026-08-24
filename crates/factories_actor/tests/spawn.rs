@@ -769,6 +769,144 @@ async fn watcher_receives_terminated_on_failure() {
     assert_eq!(deaths, vec![(7, TerminationKind::Failed)]);
 }
 
+// A watched actor that panics, to exercise `Terminated` delivery from the
+// unwinding drop-guard path (where the default `Always` policy sends
+// synchronously from a runtime thread).
+struct Doomed;
+
+declare_actor_rtti!(DOOMED_RTTI, Doomed);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Doomed {
+    const RTTI: &'static ActorRtti = DOOMED_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Doomed>;
+    type RunLoop = SequentialRunLoop<Doomed>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = ();
+    type EventDriver = DefaultMailboxDriver;
+}
+
+#[derive(Debug)]
+struct Boom;
+declare_message!(Boom, ());
+
+impl MessageHandler<Boom> for Doomed {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Doomed, Boom> =
+        declare_static_async_dispatcher!(Doomed, Boom, |_ctx| async move {
+            panic!("boom");
+        });
+}
+
+// Multi-thread flavor: the drop guard delivers `Terminated` with a blocking
+// send (`Always` policy), which on a current-thread runtime deliberately
+// panics (blocking the sole thread would deadlock).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watcher_receives_terminated_on_panic() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, Doomed)
+        .await
+        .expect("doomed init is infallible");
+
+    watcher.watch(&watched, 21);
+
+    // The handler panic unwinds the actor task; the dead-on-drop guard delivers
+    // the signal synchronously before the terminal transition.
+    let watched_state = watched.state().clone();
+    watched.tell(Boom).send().await.expect("tell");
+    watched_state.wait_for_terminal().await;
+
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, vec![(21, TerminationKind::Aborted)]);
+}
+
+// An actor whose `Stall` handler parks until released, so its bounded mailbox
+// can be filled to capacity.
+struct Sloth;
+
+declare_actor_rtti!(SLOTH_RTTI, Sloth);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Sloth {
+    const RTTI: &'static ActorRtti = SLOTH_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Sloth>;
+    type RunLoop = SequentialRunLoop<Sloth>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = ();
+    type EventDriver = DefaultMailboxDriver;
+}
+
+#[derive(Debug)]
+struct Stall(tokio::sync::oneshot::Receiver<()>);
+declare_message!(Stall, ());
+
+impl MessageHandler<Stall> for Sloth {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Sloth, Stall> =
+        declare_static_async_dispatcher!(Sloth, Stall, |ctx| async move {
+            let (_guard, message, _) = ctx.into_parts();
+            let _ = message.0.await;
+        });
+}
+
+#[derive(Debug)]
+struct Nudge;
+declare_message!(Nudge, ());
+
+impl MessageHandler<Nudge> for Sloth {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Sloth, Nudge> =
+        declare_static_async_dispatcher!(Sloth, Nudge, |ctx| async move {
+            drop(ctx);
+        });
+}
+
+// A blocking send from a runtime worker thread must wait for mailbox room
+// (this is how `WatchDeliveryPolicy::Always` delivers from an unwinding
+// actor's drop guard), not panic like tokio's raw `blocking_send` would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocking_send_inside_runtime_waits_for_room() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Sloth)
+        .await
+        .expect("sloth init is infallible");
+
+    // Park the run loop, then fill the bounded mailbox to capacity.
+    let (release, gate) = tokio::sync::oneshot::channel();
+    handle.tell(Stall(gate)).send().await.expect("stall");
+    while handle.tell(Nudge).try_send().is_ok() {}
+
+    let sender = handle.clone();
+    let blocked = tokio::task::spawn(async move { sender.tell(Nudge).blocking_send() });
+
+    // Let the blocking sender actually hit the full mailbox before draining it.
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    release.send(()).expect("release the stalled handler");
+
+    let result = blocked.await.expect("blocking sender neither panics nor is cancelled");
+    result.expect("blocking send completes once the mailbox drains");
+}
+
 #[tokio::test]
 async fn unwatch_stops_delivery() {
     let spawner = TokioTaskSpawner::current();
