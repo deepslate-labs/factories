@@ -48,9 +48,9 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
         let mut work_set = FuturesUnordered::new();
 
         loop {
-            // A handler failed the actor: stop pulling and skip the drain - the
-            // actor state is compromised. The stop hook still runs.
-            if self.dispatch_context.shared().failed_error().is_some() {
+            // A handler failed or panicked: stop pulling and skip the drain -
+            // the actor state is compromised. The stop hook still runs.
+            if self.dispatch_context.shared().is_compromised() {
                 break;
             }
 
@@ -68,6 +68,11 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
                 }
             } else {
                 match futures::future::select(work_set.next(), pull).await {
+                    // A handler panicked: record it and shut down.
+                    Either::Left((Some(Some(panic)), _)) => {
+                        self.dispatch_context.shared().record_panic(panic);
+                        break;
+                    }
                     // A handler finished: take another lap to pull again.
                     Either::Left(_) => continue,
                     Either::Right((Some(handler), _)) => handler,
@@ -75,14 +80,19 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
                 }
             };
 
-            work_set.push(handler);
+            work_set.push(loop_support::drive_capturing_panics(handler));
         }
 
-        // Drive pending work to completion before shutting down, unless a failure
-        // already compromised the state (then the in-flight work is dropped).
-        if self.dispatch_context.shared().failed_error().is_none() {
-            while work_set.next().await.is_some() {
-                if self.dispatch_context.shared().failed_error().is_some() {
+        // Drive pending work to completion before shutting down, unless a
+        // failure or panic already compromised the state (then the in-flight
+        // work is dropped).
+        if !self.dispatch_context.shared().is_compromised() {
+            while let Some(outcome) = work_set.next().await {
+                if let Some(panic) = outcome {
+                    self.dispatch_context.shared().record_panic(panic);
+                    break;
+                }
+                if self.dispatch_context.shared().is_compromised() {
                     break;
                 }
             }

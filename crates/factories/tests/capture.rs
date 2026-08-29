@@ -200,7 +200,7 @@ async fn a_childs_spawn_records_its_parent() {
     );
 }
 
-// -- abnormal termination (panic / abort) -------------------------------------
+// -- abnormal termination (captured panic) ------------------------------------
 
 #[derive(Actor)]
 #[actor(lock = UnguardedLock<Self>, run_loop = SequentialRunLoop<Self>)]
@@ -215,7 +215,7 @@ impl Doomed {
 }
 
 #[tokio::test]
-async fn an_aborted_actor_emits_exactly_one_died() {
+async fn a_panicked_actor_emits_exactly_one_died() {
     use factories::actor::lifecycle::TerminationKind;
 
     let spawner = TokioTaskSpawner::current();
@@ -229,7 +229,7 @@ async fn an_aborted_actor_emits_exactly_one_died() {
         .expect("init");
 
     let state = handle.state().clone();
-    let _ = handle.boom().tell().await; // the handler panics -> the task aborts
+    let _ = handle.boom().tell().await; // the handler panics -> the loop captures it
     state.wait_for_terminal().await;
 
     let events = sink.0.lock().expect("sink mutex");
@@ -239,8 +239,8 @@ async fn an_aborted_actor_emits_exactly_one_died() {
         .collect();
     assert_eq!(deaths.len(), 1, "exactly one Died, no double-emit: {events:?}");
     assert!(
-        matches!(deaths[0], CaptureEvent::Died { reason: TerminationKind::Aborted, .. }),
-        "the abort path records Aborted: {:?}",
+        matches!(deaths[0], CaptureEvent::Died { reason: TerminationKind::Panicked, .. }),
+        "a captured handler panic records Panicked: {:?}",
         deaths[0],
     );
 }

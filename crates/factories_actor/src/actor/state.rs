@@ -1,6 +1,6 @@
 use crate::actor::Actor;
 use crate::actor::extension::ExtensionSet;
-use crate::actor::lifecycle::{TerminationKind, TerminationReason};
+use crate::actor::lifecycle::{CapturedPanic, TerminationKind, TerminationReason};
 use crate::actor::supervision::{Subscription, ActorId};
 use crate::actor::task::ActorTaskHandle;
 use alloc::sync::Arc;
@@ -288,14 +288,19 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
         let _ = self.inner.reason.set(TerminationReason::Failed(error));
     }
 
+    /// Record that a handler or hook panicked and the unwind was captured.
+    pub fn record_panic(&self, panic: CapturedPanic) {
+        let _ = self.inner.reason.set(TerminationReason::Panicked(panic));
+    }
+
     /// Record that the actor finished cleanly. No-op if an outcome is already
     /// recorded (e.g. a handler failed it first).
     pub fn mark_finished(&self) {
         let _ = self.inner.reason.set(TerminationReason::Finished);
     }
 
-    /// Record that the actor was aborted (panic / task abort). No-op if an
-    /// outcome is already recorded; this is the
+    /// Record that the actor was aborted (task abort, or a panic that escaped
+    /// capture). No-op if an outcome is already recorded; this is the
     /// [`DeadOnDropGuard`]'s fallback for the paths that record nothing else.
     pub fn mark_aborted(&self) {
         let _ = self.inner.reason.set(TerminationReason::Aborted);
@@ -313,6 +318,16 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
             Some(TerminationReason::Failed(error)) => Some(error),
             _ => None,
         }
+    }
+
+    /// Whether a failure or captured panic is recorded - i.e. the actor state
+    /// may have broken invariants. Run loops use this to stop pulling messages
+    /// and skip draining in-flight work.
+    pub fn is_compromised(&self) -> bool {
+        matches!(
+            self.inner.reason.get(),
+            Some(TerminationReason::Failed(_) | TerminationReason::Panicked(_))
+        )
     }
 
     /// This actor's process-unique, never-reused identity.
@@ -368,9 +383,9 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
         }
     }
 
-    /// Non-awaiting subscriber notification for the terminal `Drop` path (panic
-    /// / task abort), where the async [`notify_subscribers`](Self::notify_subscribers)
-    /// could not run.
+    /// Non-awaiting subscriber notification for the terminal `Drop` path (task
+    /// abort / uncaptured panic), where the async
+    /// [`notify_subscribers`](Self::notify_subscribers) could not run.
     pub(crate) fn notify_subscribers_now(&self) {
         let Some((kind, subscriptions)) = self.take_subscriptions() else {
             return;
@@ -509,9 +524,10 @@ pub struct DeadOnDropGuard<A: Actor + ?Sized> {
 impl<A: Actor + ?Sized> Drop for DeadOnDropGuard<A> {
     fn drop(&mut self) {
         // Record the fallback outcome before the terminal transition, so
-        // observers of `Dead` always see *some* reason. A clean drain or a
-        // handler failure has already recorded one, making this a no-op; only
-        // a panic / task abort lands here with an empty reason cell.
+        // observers of `Dead` always see *some* reason. A clean drain, a
+        // handler failure or a captured panic has already recorded one, making
+        // this a no-op; only a task abort - or a panic that escaped capture -
+        // lands here with an empty reason cell.
         self.state.mark_aborted();
         // Only the abort path lands here with `Aborted` actually recorded (the
         // clean / failed paths recorded their reason earlier, so `mark_aborted`
@@ -525,10 +541,11 @@ impl<A: Actor + ?Sized> Drop for DeadOnDropGuard<A> {
             crate::capture::record_died(&self.state);
         }
         // Fallback notification for the paths that skip the async terminal
-        // (panic / task abort): can't await here, so each subscription's
-        // delivery policy picks blocking or best-effort. The clean and failed
-        // paths already delivered (and drained) via the async
-        // `notify_subscribers`, making this a no-op for them.
+        // (task abort / uncaptured panic): can't await here, so each
+        // subscription's delivery policy picks blocking or best-effort. The
+        // clean, failed and captured-panic paths already delivered (and
+        // drained) via the async `notify_subscribers`, making this a no-op for
+        // them.
         self.state.notify_subscribers_now();
         self.state.transition_dead();
     }

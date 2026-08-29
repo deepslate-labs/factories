@@ -245,8 +245,9 @@ impl Subscription {
         }
     }
 
-    /// Synchronous delivery for the terminal `Drop` path (panic / task abort),
-    /// where awaiting is impossible. The delivery policy decides what a full
+    /// Synchronous delivery for the terminal `Drop` path (task abort /
+    /// uncaptured panic), where awaiting is impossible. The delivery policy
+    /// decides what a full
     /// mailbox means: [`Always`](WatchDeliveryPolicy::Always) blocks the
     /// current thread until there is room (or the watcher dies), the other
     /// policies drop the signal.

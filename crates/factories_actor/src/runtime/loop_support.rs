@@ -9,7 +9,7 @@
 
 use crate::actor::event::{EventContext, EventDriver};
 use crate::actor::handle::WeakActorHandle;
-use crate::actor::lifecycle::StopReason;
+use crate::actor::lifecycle::{CapturedPanic, StopReason, TerminationReason};
 use crate::actor::state::SharedActorState;
 use crate::actor::work::{FutureWorkConverter, into_work};
 use crate::actor::{
@@ -25,6 +25,33 @@ use core::pin::Pin;
 /// `Erased` straight from the dispatcher (written into a caller-owned slot) and
 /// views it as this concrete future, so the loops never touch the GAT directly.
 pub type StandardWork<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// Drive one unit of handler or hook work, capturing a panic instead of
+/// letting it unwind the loop. Returns the captured panic, `None` on normal
+/// completion.
+#[cfg(feature = "std")]
+pub async fn drive_capturing_panics<F>(work: F) -> Option<CapturedPanic>
+where
+    F: Future<Output = ()>,
+{
+    use futures::FutureExt;
+
+    match core::panic::AssertUnwindSafe(work).catch_unwind().await {
+        Ok(()) => None,
+        Err(payload) => Some(CapturedPanic::from_unwind_payload(payload)),
+    }
+}
+
+/// Without `std` there is no `catch_unwind`: drive the work as-is. A panic
+/// unwinds the actor task and lands on the `Aborted` drop-guard path.
+#[cfg(not(feature = "std"))]
+pub async fn drive_capturing_panics<F>(work: F) -> Option<CapturedPanic>
+where
+    F: Future<Output = ()>,
+{
+    work.await;
+    None
+}
 
 /// The dispatch context shared by the standard run loops: the actor's lock
 /// strategy plus its shared state.
@@ -99,7 +126,8 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
     ///
     /// Called once the loop has quiesced (no more dispatches in flight), so the
     /// context is the actor's sole owner and can reclaim it by value from the
-    /// lock. The stop reason is derived from whether an error was recorded.
+    /// lock. The stop reason is derived from the recorded outcome (a failure or
+    /// captured panic), defaulting to a clean finish.
     pub async fn run_stop_hook(self)
     where
         A: Sized + Send,
@@ -114,11 +142,14 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         // Observable transition; a no-op if the actor never reached `Running`.
         shared.transition_stopping();
 
-        let reason = match shared.failed_error() {
-            Some(error) => StopReason::Failed(error),
-            None => {
-                // Record the clean outcome before reclaiming the actor, so the
-                // reason is observable as soon as the loop has quiesced.
+        let reason = match shared.termination_reason() {
+            Some(TerminationReason::Failed(error)) => StopReason::Failed(error),
+            Some(TerminationReason::Panicked(panic)) => StopReason::Panicked(panic),
+            // `Finished` / `Aborted` cannot be recorded while the loop is still
+            // alive, so this is the nothing-recorded case: record the clean
+            // outcome before reclaiming the actor, so the reason is observable
+            // as soon as the loop has quiesced.
+            _ => {
                 shared.mark_finished();
                 StopReason::Finished
             }
@@ -127,6 +158,7 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         let (outcome, failed) = match reason {
             StopReason::Finished => ("finished", false),
             StopReason::Failed(_) => ("failed", true),
+            StopReason::Panicked(_) => ("panicked", true),
         };
         let id = shared.id();
 
@@ -259,12 +291,21 @@ pub async fn standard_run_with<A, L, I, M>(
                 <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
                     start,
                 );
-            crate::obs::run_on_start(A::RTTI.name(), shared.id(), start_fut).await;
+            if let Some(panic) = drive_capturing_panics(crate::obs::run_on_start(
+                A::RTTI.name(),
+                shared.id(),
+                start_fut,
+            ))
+            .await
+            {
+                shared.record_panic(panic);
+            }
         }
 
-        // A failing start hook aborts startup before the loop runs - and the
-        // stop hook does not run, since the actor never reached `Running`.
-        if shared.failed_error().is_some() {
+        // A failing or panicking start hook aborts startup before the loop runs
+        // - and the stop hook does not run, since the actor never reached
+        // `Running`.
+        if shared.is_compromised() {
             return;
         }
         shared.transition_running();

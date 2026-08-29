@@ -43,8 +43,9 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
         WeakActorHandle<A>: Send + Sync,
     {
         loop {
-            // A handler failed the actor: stop pulling (the stop hook still runs).
-            if self.dispatch_context.shared().failed_error().is_some() {
+            // A handler failed or panicked: stop pulling (the stop hook still
+            // runs, with the recorded reason).
+            if self.dispatch_context.shared().is_compromised() {
                 break;
             }
 
@@ -56,7 +57,10 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
                 break;
             };
 
-            handler.await;
+            if let Some(panic) = loop_support::drive_capturing_panics(handler).await {
+                self.dispatch_context.shared().record_panic(panic);
+                break;
+            }
         }
 
         self.dispatch_context.run_stop_hook().await;

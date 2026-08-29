@@ -20,7 +20,11 @@ tokio-answer = ["factories_actor/tokio-answer"]
 # Lock strategies backed by tokio's async sync primitives (no runtime needed).
 tokio-lock = ["factories_actor/tokio-lock"]
 # The default actor channel and task spawner (tokio mpsc mailbox + tokio rt).
+# Implies `std`, so handler/hook panics are captured.
 tokio-runtime = ["factories_actor/tokio-runtime"]
+# Capture handler/hook panics with `catch_unwind`: a panicking actor still runs
+# its stop hook and records a `Panicked` outcome observable by watchers.
+std = ["factories_actor/std"]
 # Diagnostic spans.
 tracing = ["factories_actor/tracing"]
 # `otel.*` convention fields on the framework's spans (implies `tracing`).

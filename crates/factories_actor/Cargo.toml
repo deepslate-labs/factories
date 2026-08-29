@@ -17,7 +17,14 @@ tokio-answer = ["dep:tokio", "tokio/sync"]
 # Lock strategies backed by tokio's async sync primitives (no runtime needed)
 tokio-lock = ["dep:tokio", "tokio/sync"]
 # The default actor channel and task spawner (tokio mpsc mailbox + tokio rt).
-tokio-runtime = ["dep:tokio", "tokio/rt", "tokio/sync"]
+# Implies `std`: tokio needs std anyway, and with it panics are captured.
+tokio-runtime = ["dep:tokio", "tokio/rt", "tokio/sync", "std"]
+
+# Capture handler/hook panics with `catch_unwind`: a panicking actor still runs
+# its stop hook and records a `Panicked` outcome observable by watchers.
+# Without this (or under `panic = "abort"`) a panic unwinds the actor task and
+# lands on the `Aborted` drop-guard path, exactly as before.
+std = ["futures/std"]
 tracing = ["dep:tracing"]
 # Additionally stamp `otel.*` convention fields (otel.name, otel.kind) on the
 # framework's spans so `tracing-opentelemetry` exports them with meaningful

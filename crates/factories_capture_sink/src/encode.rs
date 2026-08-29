@@ -53,6 +53,7 @@ const fn termination_tag(kind: TerminationKind) -> u8 {
         TerminationKind::Finished => 0,
         TerminationKind::Failed => 1,
         TerminationKind::Aborted => 2,
+        TerminationKind::Panicked => 3,
     }
 }
 
@@ -121,5 +122,6 @@ mod tests {
         assert_eq!(termination_tag(TerminationKind::Finished), 0);
         assert_eq!(termination_tag(TerminationKind::Failed), 1);
         assert_eq!(termination_tag(TerminationKind::Aborted), 2);
+        assert_eq!(termination_tag(TerminationKind::Panicked), 3);
     }
 }

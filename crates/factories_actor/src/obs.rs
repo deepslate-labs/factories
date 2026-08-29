@@ -122,9 +122,9 @@ pub(crate) fn actor_stopped(actor: &'static str, id: ActorId, outcome: &'static 
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn actor_stopped(_: &'static str, _: ActorId, _: &'static str, _: bool) {}
 
-/// Emit the "actor aborted" event for the terminal drop path (panic / task
-/// abort), where neither the stop hook nor the clean stopped event ran. `WARN`,
-/// since an abort is an abnormal outcome.
+/// Emit the "actor aborted" event for the terminal drop path (task abort /
+/// uncaptured panic), where neither the stop hook nor the clean stopped event
+/// ran. `WARN`, since an abort is an abnormal outcome.
 #[cfg(feature = "tracing")]
 pub(crate) fn actor_aborted(actor: &'static str, id: ActorId) {
     tracing::warn!(actor.name = actor, actor.id = id.as_usize() as u64, "actor aborted");

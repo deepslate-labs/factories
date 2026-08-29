@@ -87,6 +87,9 @@ impl Heartbeat {
                 println!("[on_stop] graceful shutdown after {} beats", self.beats)
             }
             StopReason::Failed(_) => println!("[on_stop] shutting down after a failure"),
+            StopReason::Panicked(panic) => {
+                println!("[on_stop] shutting down after a panic: {panic}")
+            }
         }
     }
 }

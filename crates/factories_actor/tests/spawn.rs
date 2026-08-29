@@ -769,9 +769,8 @@ async fn watcher_receives_terminated_on_failure() {
     assert_eq!(deaths, vec![(7, TerminationKind::Failed)]);
 }
 
-// A watched actor that panics, to exercise `Terminated` delivery from the
-// unwinding drop-guard path (where the default `Always` policy sends
-// synchronously from a runtime thread).
+// A watched actor that panics, to exercise the panic-capture path: the loop
+// catches the unwind and watchers observe the `Panicked` kind.
 struct Doomed;
 
 declare_actor_rtti!(DOOMED_RTTI, Doomed);
@@ -803,10 +802,10 @@ impl MessageHandler<Boom> for Doomed {
         });
 }
 
-// Multi-thread flavor: the drop guard delivers `Terminated` with a blocking
-// send (`Always` policy), which on a current-thread runtime deliberately
-// panics (blocking the sole thread would deadlock).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Current-thread flavor works here: the captured panic goes through the
+// regular stop path, so `Terminated` is delivered on the awaiting async path -
+// not the drop guard's blocking fallback.
+#[tokio::test]
 async fn watcher_receives_terminated_on_panic() {
     let spawner = TokioTaskSpawner::current();
 
@@ -822,14 +821,14 @@ async fn watcher_receives_terminated_on_panic() {
 
     watcher.watch(&watched, 21);
 
-    // The handler panic unwinds the actor task; the dead-on-drop guard delivers
-    // the signal synchronously before the terminal transition.
+    // The handler panic is captured by the loop, which records `Panicked` and
+    // shuts down through the regular stop path.
     let watched_state = watched.state().clone();
     watched.tell(Boom).send().await.expect("tell");
     watched_state.wait_for_terminal().await;
 
     let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
-    assert_eq!(deaths, vec![(21, TerminationKind::Aborted)]);
+    assert_eq!(deaths, vec![(21, TerminationKind::Panicked)]);
 }
 
 // An actor whose `Stall` handler parks until released, so its bounded mailbox
@@ -1322,6 +1321,7 @@ unsafe impl Actor for Hooked {
         let tag = match reason {
             StopReason::Finished => "stop:finished",
             StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
         };
         async move { log.record(tag) }
     }
@@ -1343,6 +1343,284 @@ impl MessageHandler<Ping> for Hooked {
                 let _ = answer.send(());
             }
         });
+}
+
+// A message whose handler panics, for the panic-capture path: the loop catches
+// the unwind, records `Panicked`, and still runs the stop hook.
+#[derive(Debug)]
+struct Explode;
+declare_message!(Explode, ());
+
+impl MessageHandler<Explode> for Hooked {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Hooked, Explode> =
+        declare_static_async_dispatcher!(Hooked, Explode, |_ctx| async move {
+            panic!("exploded in handler");
+        });
+}
+
+#[tokio::test]
+async fn panicking_handler_runs_stop_hook_with_panicked_reason() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Hooked)
+        .await
+        .expect("hooked init is infallible");
+
+    let log = handle.state().shared_data().clone();
+    let state = handle.state().clone();
+
+    handle.tell(Explode).send().await.expect("tell");
+    state.wait_for_terminal().await;
+
+    assert_eq!(
+        log.snapshot(),
+        ["start", "stop:panicked"],
+        "a captured handler panic still runs on_stop, with the Panicked reason"
+    );
+    match state.termination_reason() {
+        Some(TerminationReason::Panicked(panic)) => {
+            assert_eq!(panic.message(), Some("exploded in handler"));
+        }
+        other => panic!("expected the Panicked termination reason, got {other:?}"),
+    }
+}
+
+// A handler that fails the actor and then panics: the write-once reason cell
+// keeps the first outcome, so the deliberate failure wins over the panic.
+#[derive(Debug)]
+struct FailThenPanic;
+declare_message!(FailThenPanic, ());
+
+impl MessageHandler<FailThenPanic> for Fragile {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Fragile, FailThenPanic> =
+        declare_static_async_dispatcher!(Fragile, FailThenPanic, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, _answer) = ctx.into_parts();
+            actor_cx.fail(Kaboom);
+            panic!("panic after deliberate failure");
+        });
+}
+
+#[tokio::test]
+async fn recorded_failure_wins_over_later_panic() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Fragile)
+        .await
+        .expect("fragile init is infallible");
+
+    let state = handle.state().clone();
+    handle.tell(FailThenPanic).send().await.expect("tell");
+    state.wait_for_terminal().await;
+
+    assert!(
+        matches!(
+            state.termination_reason(),
+            Some(TerminationReason::Failed(Kaboom))
+        ),
+        "the first recorded outcome (the deliberate failure) wins over the panic"
+    );
+}
+
+// A panicking start hook follows the failed-start rule: the outcome is
+// recorded, the actor never reaches `Running`, and on_stop does NOT run.
+struct PanickyStart;
+
+declare_actor_rtti!(PANICKY_START_RTTI, PanickyStart);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for PanickyStart {
+    const RTTI: &'static ActorRtti = PANICKY_START_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<PanickyStart>;
+    type RunLoop = SequentialRunLoop<PanickyStart>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = LifecycleLog;
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_start<'a>(
+        &'a mut self,
+        _cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move { panic!("start hook panicked") }
+    }
+
+    fn on_stop<'a>(
+        self,
+        _reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().clone();
+        async move { log.record("stop") }
+    }
+}
+
+#[tokio::test]
+async fn panicking_start_hook_records_panic_without_stop_hook() {
+    let spawner = TokioTaskSpawner::current();
+
+    // `spawn_ready` yields `Ok` here: the actor died without an `A::Error`
+    // (the panic is not a typed failure), so death is observed via the state.
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, PanickyStart)
+        .await
+        .expect("a panicked start is not a typed init error");
+
+    let state = handle.state().clone();
+    state.wait_for_terminal().await;
+
+    match state.termination_reason() {
+        Some(TerminationReason::Panicked(panic)) => {
+            assert_eq!(panic.message(), Some("start hook panicked"));
+        }
+        other => panic!("expected the Panicked termination reason, got {other:?}"),
+    }
+    assert_eq!(
+        state.shared_data().snapshot(),
+        Vec::<&str>::new(),
+        "on_stop must not run when the actor never reached Running"
+    );
+}
+
+// -- Concurrent loop: panic capture ------------------------------------------
+//
+// A panicking handler in the concurrent loop must behave like a recorded
+// failure: stop pulling, drop the in-flight work set instead of draining it
+// (the state is compromised), and still run the stop hook with the Panicked
+// reason.
+#[cfg(feature = "tokio-lock")]
+mod concurrent_panic {
+    use super::*;
+    use factories_actor::runtime::tokio::TokioMutexLock;
+
+    struct ConcPanicky;
+
+    declare_actor_rtti!(CONC_PANICKY_RTTI, ConcPanicky);
+
+    // SAFETY: The RTTI is declared for exactly this type.
+    unsafe impl Actor for ConcPanicky {
+        const RTTI: &'static ActorRtti = CONC_PANICKY_RTTI;
+
+        type Channel = TokioMpscActorChannel;
+        type Error = core::convert::Infallible;
+        type RuntimeBinder = StaticOnlyBinder;
+        type LockStrategy = TokioMutexLock<ConcPanicky>;
+        type RunLoop = ConcurrentRunLoop<ConcPanicky>;
+        type TypedHandle = TypedActorHandle<Self>;
+        type SharedData = LifecycleLog;
+        type EventDriver = DefaultMailboxDriver;
+
+        fn on_stop<'a>(
+            self,
+            reason: StopReason<'a, Self>,
+            cx: ActorContext<'a, Self>,
+        ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a
+        {
+            let log = cx.shared_data().clone();
+            let tag = match reason {
+                StopReason::Finished => "stop:finished",
+                StopReason::Failed(_) => "stop:failed",
+                StopReason::Panicked(_) => "stop:panicked",
+            };
+            async move { log.record(tag) }
+        }
+    }
+
+    /// Parks the handler (holding the exclusive guard) until released.
+    #[derive(Debug)]
+    struct Park(tokio::sync::oneshot::Receiver<()>);
+    declare_message!(Park, ());
+
+    impl MessageHandler<Park> for ConcPanicky {
+        type AccessMode = lock::Exclusive;
+
+        const DISPATCHER: StaticDispatcher<ConcPanicky, Park> =
+            declare_static_async_dispatcher!(ConcPanicky, Park, |ctx| async move {
+                let (_guard, message, _) = ctx.into_parts();
+                let _ = message.0.await;
+            });
+    }
+
+    #[derive(Debug)]
+    struct BoomConc;
+    declare_message!(BoomConc, ());
+
+    impl MessageHandler<BoomConc> for ConcPanicky {
+        type AccessMode = lock::Exclusive;
+
+        const DISPATCHER: StaticDispatcher<ConcPanicky, BoomConc> =
+            declare_static_async_dispatcher!(ConcPanicky, BoomConc, |_ctx| async move {
+                panic!("boom in concurrent handler");
+            });
+    }
+
+    /// Answers through its oneshot if it ever runs; dropping it unrun drops
+    /// the sender, which the test observes as a `RecvError`.
+    #[derive(Debug)]
+    struct Probe(tokio::sync::oneshot::Sender<()>);
+    declare_message!(Probe, ());
+
+    impl MessageHandler<Probe> for ConcPanicky {
+        type AccessMode = lock::Exclusive;
+
+        const DISPATCHER: StaticDispatcher<ConcPanicky, Probe> =
+            declare_static_async_dispatcher!(ConcPanicky, Probe, |ctx| async move {
+                let (_guard, message, _) = ctx.into_parts();
+                let _ = message.0.send(());
+            });
+    }
+
+    #[tokio::test]
+    async fn captures_panic_and_drops_in_flight_work() {
+        let spawner = TokioTaskSpawner::current();
+
+        let handle = ActorLauncher::default()
+            .spawn_ready(&spawner, ConcPanicky)
+            .await
+            .expect("init is infallible");
+
+        let log = handle.state().shared_data().clone();
+        let state = handle.state().clone();
+
+        let (release, parked) = tokio::sync::oneshot::channel();
+        let (probe_tx, probe_rx) = tokio::sync::oneshot::channel();
+
+        // FIFO dispatch + fair mutex: Park holds the guard, BoomConc and Probe
+        // queue up behind it in the work set / mailbox.
+        handle.tell(Park(parked)).send().await.expect("tell park");
+        handle.tell(BoomConc).send().await.expect("tell boom");
+        handle.tell(Probe(probe_tx)).send().await.expect("tell probe");
+
+        // Release the parked handler: BoomConc acquires next and panics.
+        release.send(()).expect("parked handler holds the receiver");
+
+        state.wait_for_terminal().await;
+
+        assert!(
+            probe_rx.await.is_err(),
+            "work in flight behind a panic is dropped, not drained"
+        );
+        assert_eq!(
+            log.snapshot(),
+            ["stop:panicked"],
+            "a captured panic in the concurrent loop still runs on_stop"
+        );
+        match state.termination_reason() {
+            Some(TerminationReason::Panicked(panic)) => {
+                assert_eq!(panic.message(), Some("boom in concurrent handler"));
+            }
+            other => panic!("expected the Panicked termination reason, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]

@@ -443,7 +443,7 @@ async fn successful_handler_span_has_no_error() {
     assert_eq!(span.field("otel.status_code"), None);
 }
 
-// An actor whose handler panics, to exercise the terminal abort path.
+// An actor whose handler panics, to exercise the panic-capture stop path.
 struct Doomed;
 
 declare_actor_rtti!(DOOMED_RTTI, Doomed);
@@ -476,7 +476,7 @@ impl MessageHandler<Boom> for Doomed {
 }
 
 #[tokio::test]
-async fn panicking_handler_emits_aborted_event() {
+async fn panicking_handler_emits_panicked_stopped_event() {
     install_subscriber();
     let spawner = TokioTaskSpawner::current();
 
@@ -488,15 +488,16 @@ async fn panicking_handler_emits_aborted_event() {
     let state = handle.state().clone();
     handle.tell(Boom).send().await.expect("tell");
 
-    // The handler panic unwinds the actor task; the dead-on-drop guard records
-    // the abort and emits the event before the terminal transition.
+    // The handler panic is captured; the loop runs the stop path and emits the
+    // stopped event with the `panicked` outcome.
     state.wait_for_terminal().await;
 
-    let aborted = records_for("Doomed")
+    let stopped = records_for("Doomed")
         .into_iter()
-        .find(|r| !r.is_span && r.field("message") == Some("actor aborted"))
-        .expect("actor aborted event");
-    assert_eq!(aborted.level, Level::WARN, "an abort is WARN");
+        .find(|r| !r.is_span && r.field("message") == Some("actor stopped"))
+        .expect("actor stopped event");
+    assert_eq!(stopped.field("outcome"), Some("panicked"));
+    assert_eq!(stopped.level, Level::WARN, "a panic outcome is WARN");
 }
 
 #[tokio::test]

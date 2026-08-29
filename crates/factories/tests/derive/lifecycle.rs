@@ -46,6 +46,7 @@ impl Hooked {
         cx.shared_data().record(match reason {
             StopReason::Finished => "stop:finished",
             StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
         });
     }
 

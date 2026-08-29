@@ -13,7 +13,79 @@
 
 use crate::actor::work::WorkConverter;
 use crate::actor::{Actor, ActorContext, ActorRunLoop};
-use core::fmt::{Debug, Formatter};
+use alloc::boxed::Box;
+use alloc::string::String;
+use core::any::Any;
+use core::cell::RefCell;
+use core::fmt::{Debug, Display, Formatter};
+
+/// A panic payload captured from an unwinding handler or hook, in a form that
+/// is always `Send + Sync`.
+///
+/// The panic message is extracted eagerly at capture time (a copy), so
+/// [`message`](Self::message) and the [`Display`] impl keep working no matter
+/// what happens to the payload. The original payload - exactly the box
+/// `catch_unwind` produced - is retained untouched and can be reclaimed once
+/// via [`take_raw`](Self::take_raw), e.g. to feed existing panic-reporting
+/// infrastructure or `resume_unwind`.
+pub struct CapturedPanic {
+    /// Eagerly extracted for string payloads (`panic!` literals and formatted
+    /// messages), so it survives [`take_raw`](Self::take_raw).
+    message: Option<Box<str>>,
+
+    /// The original unwind payload, take-once. The lock turns the `Send`-only
+    /// box `Sync`; it is held only for the pointer-sized move in `take_raw`.
+    payload: critical_section::Mutex<RefCell<Option<Box<dyn Any + Send>>>>,
+}
+
+impl CapturedPanic {
+    /// Capture the payload an unwind produced (what `catch_unwind` returned).
+    pub fn from_unwind_payload(payload: Box<dyn Any + Send>) -> Self {
+        let message = if let Some(message) = payload.downcast_ref::<&'static str>() {
+            Some(Box::from(*message))
+        } else {
+            payload
+                .downcast_ref::<String>()
+                .map(|message| Box::from(message.as_str()))
+        };
+
+        Self {
+            message,
+            payload: critical_section::Mutex::new(RefCell::new(Some(payload))),
+        }
+    }
+
+    /// The panic message, if the payload was a string (every `panic!`,
+    /// `assert!` and `unwrap` - the overwhelmingly common case). Unaffected by
+    /// [`take_raw`](Self::take_raw).
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    /// Take the original unwind payload - byte-for-byte what `catch_unwind`
+    /// produced, uniformly for every payload type. `None` after the first
+    /// call.
+    pub fn take_raw(&self) -> Option<Box<dyn Any + Send>> {
+        critical_section::with(|cs| self.payload.borrow_ref_mut(cs).take())
+    }
+}
+
+impl Display for CapturedPanic {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self.message() {
+            Some(message) => f.write_str(message),
+            None => f.write_str("<non-string panic payload>"),
+        }
+    }
+}
+
+impl Debug for CapturedPanic {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CapturedPanic")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Why an actor's run loop is stopping, handed to
 /// [`on_stop`](crate::actor::Actor::on_stop).
@@ -25,6 +97,12 @@ pub enum StopReason<'a, A: Actor + ?Sized> {
     /// A handler - or the start hook - failed the actor. Carries the error that
     /// was recorded with [`ActorContext::fail`](crate::actor::ActorContext::fail).
     Failed(&'a A::Error),
+
+    /// A handler panicked and the loop captured the unwind.
+    ///
+    /// When dealing with a panic, keep in mind that message handler work may not
+    /// have completed and inconsistent state is possibly observable on the actor.
+    Panicked(&'a CapturedPanic),
 }
 
 /// The recorded outcome of an actor, observable through
@@ -37,8 +115,14 @@ pub enum TerminationReason<A: Actor + ?Sized> {
     /// error recorded with [`ActorContext::fail`](crate::actor::ActorContext::fail).
     Failed(A::Error),
 
+    /// A handler or hook panicked and the loop captured the unwind.
+    ///
+    /// If factories was not able to catch a panic (for example, `std` is not
+    /// available), then [`Aborted`] might be signalled instead.
+    Panicked(CapturedPanic),
+
     /// The actor reached [`Dead`](crate::actor::state::LifecycleState::Dead) with
-    /// no outcome recorded: a panic unwound the loop, or the task was aborted.
+    /// no outcome recorded: the task was aborted.
     Aborted,
 }
 
@@ -52,6 +136,7 @@ impl<A: Actor + ?Sized> TerminationReason<A> {
         match self {
             Self::Finished => TerminationKind::Finished,
             Self::Failed(_) => TerminationKind::Failed,
+            Self::Panicked(_) => TerminationKind::Panicked,
             Self::Aborted => TerminationKind::Aborted,
         }
     }
@@ -65,6 +150,7 @@ where
         match self {
             Self::Finished => f.write_str("Finished"),
             Self::Failed(error) => f.debug_tuple("Failed").field(error).finish(),
+            Self::Panicked(panic) => f.debug_tuple("Panicked").field(panic).finish(),
             Self::Aborted => f.write_str("Aborted"),
         }
     }
@@ -83,8 +169,11 @@ pub enum TerminationKind {
     /// A handler, the start hook, or init failed the actor.
     Failed,
 
+    /// A handler or hook panicked and the loop captured the unwind.
+    Panicked,
+
     /// The actor reached [`Dead`](crate::actor::state::LifecycleState::Dead)
-    /// with no recorded outcome: a panic, or a task abort.
+    /// with no recorded outcome: a task abort, or a panic that escaped capture.
     Aborted,
 }
 
@@ -107,6 +196,7 @@ where
         match self {
             Self::Finished => f.write_str("Finished"),
             Self::Failed(error) => f.debug_tuple("Failed").field(error).finish(),
+            Self::Panicked(panic) => f.debug_tuple("Panicked").field(panic).finish(),
         }
     }
 }
