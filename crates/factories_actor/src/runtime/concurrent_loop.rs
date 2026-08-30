@@ -63,8 +63,12 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
             // selecting on it would busy-spin. Only race it when it has work.
             let handler = if work_set.is_empty() {
                 match pull.await {
-                    Some(handler) => handler,
-                    None => break,
+                    Ok(Some(handler)) => handler,
+                    Ok(None) => break,
+                    Err(panic) => {
+                        self.dispatch_context.shared().record_panic(panic);
+                        break;
+                    }
                 }
             } else {
                 match futures::future::select(work_set.next(), pull).await {
@@ -75,8 +79,12 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for ConcurrentRunLoop<A>
                     }
                     // A handler finished: take another lap to pull again.
                     Either::Left(_) => continue,
-                    Either::Right((Some(handler), _)) => handler,
-                    Either::Right((None, _)) => break,
+                    Either::Right((Ok(Some(handler)), _)) => handler,
+                    Either::Right((Ok(None), _)) => break,
+                    Either::Right((Err(panic), _)) => {
+                        self.dispatch_context.shared().record_panic(panic);
+                        break;
+                    }
                 }
             };
 

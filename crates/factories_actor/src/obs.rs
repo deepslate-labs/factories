@@ -18,6 +18,8 @@
 
 use crate::actor::channel::ActorChannelSendError;
 use crate::actor::lifecycle::TerminationKind;
+#[cfg(feature = "tracing")]
+use crate::actor::lifecycle::CapturedPanic;
 use crate::actor::supervision::ActorId;
 use core::future::Future;
 
@@ -121,6 +123,23 @@ pub(crate) fn actor_stopped(actor: &'static str, id: ActorId, outcome: &'static 
 /// No-op without the `tracing` feature.
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn actor_stopped(_: &'static str, _: ActorId, _: &'static str, _: bool) {}
+
+/// Emit the `ERROR` event for a captured stop-hook panic. The actor's primary
+/// outcome may already be recorded (a failure or handler panic the hook was
+/// told about) - this event surfaces the hook's own panic either way.
+#[cfg(feature = "tracing")]
+pub(crate) fn stop_hook_panicked(actor: &'static str, id: ActorId, panic: &CapturedPanic) {
+    tracing::error!(
+        actor.name = actor,
+        actor.id = id.as_usize() as u64,
+        panic.message = %panic,
+        "stop hook panicked",
+    );
+}
+
+/// No-op without the `tracing` feature.
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn stop_hook_panicked(_: &'static str, _: ActorId, _: &crate::actor::lifecycle::CapturedPanic) {}
 
 /// Emit the "actor aborted" event for the terminal drop path (task abort /
 /// uncaptured panic), where neither the stop hook nor the clean stopped event

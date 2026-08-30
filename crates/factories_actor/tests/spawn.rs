@@ -1428,6 +1428,212 @@ async fn recorded_failure_wins_over_later_panic() {
     );
 }
 
+// An actor whose stop hook itself panics on the clean-drain path. The panic
+// must be captured and claim the (still unset) outcome: the clean finish is
+// only recorded once the hook has actually completed.
+struct StopBomb;
+
+declare_actor_rtti!(STOP_BOMB_RTTI, StopBomb);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for StopBomb {
+    const RTTI: &'static ActorRtti = STOP_BOMB_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<StopBomb>;
+    type RunLoop = SequentialRunLoop<StopBomb>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = ();
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_stop<'a>(
+        self,
+        _reason: StopReason<'a, Self>,
+        _cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move { panic!("stop hook panicked") }
+    }
+}
+
+#[tokio::test]
+async fn panicking_stop_hook_claims_the_outcome_on_a_clean_drain() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, StopBomb)
+        .await
+        .expect("stop bomb init is infallible");
+
+    watcher.watch(&watched, 99);
+
+    // Drop the last handle: the loop drains cleanly, then the stop hook
+    // panics. The panic - not the drain - is the actor's outcome.
+    let watched_state = watched.state().clone();
+    drop(watched);
+    watched_state.wait_for_terminal().await;
+
+    match watched_state.termination_reason() {
+        Some(TerminationReason::Panicked(panic)) => {
+            assert_eq!(panic.message(), Some("stop hook panicked"));
+        }
+        other => panic!("expected the Panicked termination reason, got {other:?}"),
+    }
+
+    // Delivered on the awaiting async path, with the hook's panic as the kind.
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, vec![(99, TerminationKind::Panicked)]);
+}
+
+// A stop hook panic must not displace an outcome the actor already has: the
+// write-once cell keeps the handler's recorded failure.
+struct FailingStopBomb;
+
+declare_actor_rtti!(FAILING_STOP_BOMB_RTTI, FailingStopBomb);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for FailingStopBomb {
+    const RTTI: &'static ActorRtti = FAILING_STOP_BOMB_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = Kaboom;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<FailingStopBomb>;
+    type RunLoop = SequentialRunLoop<FailingStopBomb>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = ();
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_stop<'a>(
+        self,
+        _reason: StopReason<'a, Self>,
+        _cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move { panic!("stop hook panicked after failure") }
+    }
+}
+
+#[derive(Debug)]
+struct FailMe;
+declare_message!(FailMe, ());
+
+impl MessageHandler<FailMe> for FailingStopBomb {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<FailingStopBomb, FailMe> =
+        declare_static_async_dispatcher!(FailingStopBomb, FailMe, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, _answer) = ctx.into_parts();
+            actor_cx.fail(Kaboom);
+        });
+}
+
+#[tokio::test]
+async fn recorded_failure_survives_stop_hook_panic() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, FailingStopBomb)
+        .await
+        .expect("init is infallible");
+
+    let state = handle.state().clone();
+    handle.tell(FailMe).send().await.expect("tell");
+    state.wait_for_terminal().await;
+
+    assert!(
+        matches!(
+            state.termination_reason(),
+            Some(TerminationReason::Failed(Kaboom))
+        ),
+        "the handler's recorded failure wins over the stop hook's panic"
+    );
+}
+
+// A panicking event driver is captured like a panicking handler: the loop
+// records `Panicked` and still runs the stop hook.
+struct DriverDoomed;
+
+declare_actor_rtti!(DRIVER_DOOMED_RTTI, DriverDoomed);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for DriverDoomed {
+    const RTTI: &'static ActorRtti = DRIVER_DOOMED_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<DriverDoomed>;
+    type RunLoop = SequentialRunLoop<DriverDoomed>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = LifecycleLog;
+    type EventDriver = PanickySource;
+
+    fn on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().clone();
+        let tag = match reason {
+            StopReason::Finished => "stop:finished",
+            StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
+        };
+        async move { log.record(tag) }
+    }
+}
+
+struct PanickySource;
+
+impl From<&DriverDoomed> for PanickySource {
+    fn from(_actor: &DriverDoomed) -> Self {
+        PanickySource
+    }
+}
+
+impl<M: Send> EventDriver<DriverDoomed, M> for PanickySource {
+    fn next<'a>(
+        &'a mut self,
+        _cx: EventContext<'a, DriverDoomed>,
+        _mailbox: &'a mut M,
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a {
+        async move { panic!("event driver panicked") }
+    }
+}
+
+#[tokio::test]
+async fn panicking_event_driver_runs_stop_hook_with_panicked_reason() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, DriverDoomed)
+        .await
+        .expect("init is infallible");
+
+    let log = handle.state().shared_data().clone();
+    let state = handle.state().clone();
+    state.wait_for_terminal().await;
+
+    assert_eq!(
+        log.snapshot(),
+        ["stop:panicked"],
+        "a captured driver panic still runs on_stop with the Panicked reason"
+    );
+    match state.termination_reason() {
+        Some(TerminationReason::Panicked(panic)) => {
+            assert_eq!(panic.message(), Some("event driver panicked"));
+        }
+        other => panic!("expected the Panicked termination reason, got {other:?}"),
+    }
+}
+
 // A panicking start hook follows the failed-start rule: the outcome is
 // recorded, the actor never reaches `Running`, and on_stop does NOT run.
 struct PanickyStart;

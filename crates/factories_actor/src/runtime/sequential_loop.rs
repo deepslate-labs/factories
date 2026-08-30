@@ -49,12 +49,18 @@ impl<A: Actor<RunLoop = Self> + ?Sized> StandardLoop<A> for SequentialRunLoop<A>
                 break;
             }
 
-            let Some(handler) = self
+            let handler = match self
                 .dispatch_context
                 .next_dispatch(&mut driver, &mut mailbox)
                 .await
-            else {
-                break;
+            {
+                Ok(Some(handler)) => handler,
+                // The driver stopped the loop.
+                Ok(None) => break,
+                Err(panic) => {
+                    self.dispatch_context.shared().record_panic(panic);
+                    break;
+                }
             };
 
             if let Some(panic) = loop_support::drive_capturing_panics(handler).await {

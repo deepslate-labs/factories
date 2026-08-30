@@ -500,6 +500,62 @@ async fn panicking_handler_emits_panicked_stopped_event() {
     assert_eq!(stopped.level, Level::WARN, "a panic outcome is WARN");
 }
 
+// An actor whose stop hook panics, to exercise the captured stop-hook event.
+struct StopBombed;
+
+declare_actor_rtti!(STOP_BOMBED_RTTI, StopBombed);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for StopBombed {
+    const RTTI: &'static ActorRtti = STOP_BOMBED_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<StopBombed>;
+    type RunLoop = SequentialRunLoop<StopBombed>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = ();
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_stop<'a>(
+        self,
+        _reason: StopReason<'a, Self>,
+        _cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        async move { panic!("bye bye") }
+    }
+}
+
+#[tokio::test]
+async fn panicking_stop_hook_emits_error_event_with_message() {
+    install_subscriber();
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, StopBombed)
+        .await
+        .expect("init");
+
+    let state = handle.state().clone();
+    drop(handle);
+    state.wait_for_terminal().await;
+
+    let hook_panic = records_for("StopBombed")
+        .into_iter()
+        .find(|r| !r.is_span && r.field("message") == Some("stop hook panicked"))
+        .expect("stop hook panicked event");
+    assert_eq!(hook_panic.level, Level::ERROR, "a hook panic is ERROR");
+    assert_eq!(hook_panic.field("panic.message"), Some("bye bye"));
+
+    // The regular stopped event still fires, with the panic as the outcome.
+    let stopped = records_for("StopBombed")
+        .into_iter()
+        .find(|r| !r.is_span && r.field("message") == Some("actor stopped"))
+        .expect("actor stopped event");
+    assert_eq!(stopped.field("outcome"), Some("panicked"));
+}
+
 #[tokio::test]
 async fn message_handler_span_carries_actor_and_message_fields() {
     install_subscriber();

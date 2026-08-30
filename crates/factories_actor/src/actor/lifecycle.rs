@@ -19,8 +19,8 @@ use core::any::Any;
 use core::cell::RefCell;
 use core::fmt::{Debug, Display, Formatter};
 
-/// A panic payload captured from an unwinding handler or hook, in a form that
-/// is always `Send + Sync`.
+/// A panic payload captured from an unwinding handler, hook or event driver,
+/// in a form that is always `Send + Sync`.
 ///
 /// The panic message is extracted eagerly at capture time (a copy), so
 /// [`message`](Self::message) and the [`Display`] impl keep working no matter
@@ -98,7 +98,8 @@ pub enum StopReason<'a, A: Actor + ?Sized> {
     /// was recorded with [`ActorContext::fail`](crate::actor::ActorContext::fail).
     Failed(&'a A::Error),
 
-    /// A handler panicked and the loop captured the unwind.
+    /// A handler or the event driver panicked and the loop captured the
+    /// unwind.
     ///
     /// When dealing with a panic, keep in mind that message handler work may not
     /// have completed and inconsistent state is possibly observable on the actor.
@@ -115,7 +116,11 @@ pub enum TerminationReason<A: Actor + ?Sized> {
     /// error recorded with [`ActorContext::fail`](crate::actor::ActorContext::fail).
     Failed(A::Error),
 
-    /// A handler or hook panicked and the loop captured the unwind.
+    /// A handler, hook or event driver panicked and the loop captured the
+    /// unwind.
+    ///
+    /// If a hook panics/errors, the error is discarded and the already existing
+    /// error is kept.
     ///
     /// If factories was not able to catch a panic (for example, `std` is not
     /// available), then [`Aborted`] might be signalled instead.
@@ -169,7 +174,8 @@ pub enum TerminationKind {
     /// A handler, the start hook, or init failed the actor.
     Failed,
 
-    /// A handler or hook panicked and the loop captured the unwind.
+    /// A handler, hook or event driver panicked and the loop captured the
+    /// unwind.
     Panicked,
 
     /// The actor reached [`Dead`](crate::actor::state::LifecycleState::Dead)

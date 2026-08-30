@@ -26,31 +26,32 @@ use core::pin::Pin;
 /// views it as this concrete future, so the loops never touch the GAT directly.
 pub type StandardWork<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// Drive one unit of handler or hook work, capturing a panic instead of
-/// letting it unwind the loop. Returns the captured panic, `None` on normal
-/// completion.
+/// Drive a future, capturing a panic instead of letting it unwind the loop.
+/// `Err` carries the captured panic, `Ok` the future's output.
 #[cfg(feature = "std")]
-pub async fn drive_capturing_panics<F>(work: F) -> Option<CapturedPanic>
-where
-    F: Future<Output = ()>,
-{
+pub async fn capture_unwind<F: Future>(fut: F) -> Result<F::Output, CapturedPanic> {
     use futures::FutureExt;
 
-    match core::panic::AssertUnwindSafe(work).catch_unwind().await {
-        Ok(()) => None,
-        Err(payload) => Some(CapturedPanic::from_unwind_payload(payload)),
-    }
+    core::panic::AssertUnwindSafe(fut)
+        .catch_unwind()
+        .await
+        .map_err(CapturedPanic::from_unwind_payload)
 }
 
-/// Without `std` there is no `catch_unwind`: drive the work as-is. A panic
+/// Without `std` there is no `catch_unwind`: drive the future as-is. A panic
 /// unwinds the actor task and lands on the `Aborted` drop-guard path.
 #[cfg(not(feature = "std"))]
+pub async fn capture_unwind<F: Future>(fut: F) -> Result<F::Output, CapturedPanic> {
+    Ok(fut.await)
+}
+
+/// Drive one unit of handler or hook work under [`capture_unwind`]. Returns
+/// the captured panic, `None` on normal completion.
 pub async fn drive_capturing_panics<F>(work: F) -> Option<CapturedPanic>
 where
     F: Future<Output = ()>,
 {
-    work.await;
-    None
+    capture_unwind(work).await.err()
 }
 
 /// The dispatch context shared by the standard run loops: the actor's lock
@@ -87,13 +88,13 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
 
     /// One dispatch turn: ask the `driver` for the next message - it owns the
     /// mailbox-polling decision - and produce the [`StandardWork`] that acquires
-    /// the lock and runs the handler, ready to drive. `None` means the driver
-    /// stopped the loop.
+    /// the lock and runs the handler, ready to drive. `Ok(None)` means the
+    /// driver stopped the loop.
     pub async fn next_dispatch<'ctx, 'turn, D, M>(
         &'ctx self,
         driver: &'turn mut D,
         mailbox: &'turn mut M,
-    ) -> Option<StandardWork<'ctx>>
+    ) -> Result<Option<StandardWork<'ctx>>, CapturedPanic>
     where
         // The work borrows the context (`'ctx`); the driver/mailbox borrow
         // (`'turn`) is released when this future completes - so a concurrent loop
@@ -103,31 +104,34 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         A::RunLoop: ActorRunLoop<A, DispatchContext = Self>,
         <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
     {
-        let cx = EventContext::new(&self.lock_strategy, &self.shared);
+        capture_unwind(async move {
+            let cx = EventContext::new(&self.lock_strategy, &self.shared);
 
-        // `Send`-readable by the `EventDriver::next` bound - no reclaim.
-        let message = driver.next(cx, mailbox).await?;
+            // `Send`-readable by the `EventDriver::next` bound - no reclaim.
+            let message = driver.next(cx, mailbox).await?;
 
-        // SAFETY: the message was produced by our own driver while we are in
-        //         the actor loop, so it can be dispatched onto our loop, and
-        //         `self` is exactly this loop's `DispatchContext`.
-        let erased = unsafe { message.dispatch_onto_loop::<A>(self) };
+            // SAFETY: the message was produced by our own driver while we are in
+            //         the actor loop, so it can be dispatched onto our loop, and
+            //         `self` is exactly this loop's `DispatchContext`.
+            let erased = unsafe { message.dispatch_onto_loop::<A>(self) };
 
-        // Unpacked to the converter's `Erased`; the standard loops drive it as
-        // a `Send` future. The opaque cell is gone by here.
-        Some(
-            <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
-                erased,
-            ),
-        )
+            // Unpacked to the converter's `Erased`; the standard loops drive it
+            // as a `Send` future. The opaque cell is gone by here.
+            Some(
+                <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
+                    erased,
+                ),
+            )
+        })
+        .await
     }
 
     /// Run the actor's stop hook and consume the context.
     ///
     /// Called once the loop has quiesced (no more dispatches in flight), so the
     /// context is the actor's sole owner and can reclaim it by value from the
-    /// lock. The stop reason is derived from the recorded outcome (a failure or
-    /// captured panic), defaulting to a clean finish.
+    /// lock. The stop reason handed to the hook is derived from the recorded
+    /// outcome (a failure or captured panic), defaulting to a clean finish.
     pub async fn run_stop_hook(self)
     where
         A: Sized + Send,
@@ -145,20 +149,7 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
         let reason = match shared.termination_reason() {
             Some(TerminationReason::Failed(error)) => StopReason::Failed(error),
             Some(TerminationReason::Panicked(panic)) => StopReason::Panicked(panic),
-            // `Finished` / `Aborted` cannot be recorded while the loop is still
-            // alive, so this is the nothing-recorded case: record the clean
-            // outcome before reclaiming the actor, so the reason is observable
-            // as soon as the loop has quiesced.
-            _ => {
-                shared.mark_finished();
-                StopReason::Finished
-            }
-        };
-
-        let (outcome, failed) = match reason {
-            StopReason::Finished => ("finished", false),
-            StopReason::Failed(_) => ("failed", true),
-            StopReason::Panicked(_) => ("panicked", true),
+            _ => StopReason::Finished,
         };
         let id = shared.id();
 
@@ -173,14 +164,36 @@ impl<A: Actor + ?Sized> StandardDispatchContext<A> {
             <<A::RunLoop as ActorRunLoop<A>>::WorkConverter as FutureWorkConverter>::into_future(
                 stop,
             );
-        crate::obs::run_on_stop(A::RTTI.name(), id, stop_fut).await;
+        if let Err(panic) =
+            capture_unwind(crate::obs::run_on_stop(A::RTTI.name(), id, stop_fut)).await
+        {
+            crate::obs::stop_hook_panicked(A::RTTI.name(), id, &panic);
+            // First outcome wins: on the clean path this records the hook's
+            // panic; after a failure or handler panic the primary reason is
+            // kept (the event above still surfaces the hook's panic).
+            shared.record_panic(panic);
+        }
+
+        // The outcome is final now that the hook has run: a clean stop records
+        // `Finished` (a no-op if the hook's panic - or an earlier outcome -
+        // already took the cell).
+        shared.mark_finished();
+
+        let (outcome, failed) = match shared.termination_reason() {
+            Some(TerminationReason::Failed(_)) => ("failed", true),
+            Some(TerminationReason::Panicked(_)) => ("panicked", true),
+            // `mark_finished` above guarantees a recorded reason, and `Aborted`
+            // cannot be recorded while the loop still runs.
+            _ => ("finished", false),
+        };
         crate::obs::actor_stopped(A::RTTI.name(), id, outcome, failed);
         #[cfg(feature = "capture")]
         crate::capture::record_died(&shared);
 
         // Push termination signals to watchers on the async path, awaiting
         // mailbox room so none are dropped. Drains the set, so the drop guard's
-        // non-awaiting fallback is a no-op for this (clean / failed) path.
+        // non-awaiting fallback is a no-op for this (clean / failed / captured
+        // panic) path.
         shared.notify_subscribers().await;
     }
 }
@@ -232,7 +245,9 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
     ///
     /// Implementations must run the stop hook via
     /// [`StandardDispatchContext::run_stop_hook`] once the loop has quiesced,
-    /// whether it drained cleanly or a handler failed the actor.
+    /// whether it drained cleanly, a handler failed the actor, or a captured
+    /// panic (a [`next_dispatch`](StandardDispatchContext::next_dispatch) `Err`
+    /// or a panicking handler) was recorded.
     fn run<D, M>(self, mailbox: M, driver: D) -> impl Future<Output = ()> + Send
     where
         A: Sized + Send,
