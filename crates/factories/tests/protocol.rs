@@ -83,6 +83,19 @@ trait Gated {
     fn add(&self, msg: Add);
 }
 
+/// Gated *methods*. `Gone` is not a type anywhere in this file, so this compiles
+/// only if the method's `cfg` reaches every generated piece: the declaration,
+/// both impl methods, the handle's dispatcher slot, `try_bind`'s binding, and
+/// the `MessageHandler` bounds. `total` is the positive twin.
+#[protocol]
+trait Partial {
+    fn add(&self, msg: Add);
+    #[cfg(any())]
+    fn gone(&self, msg: Gone);
+    #[cfg(all())]
+    fn total(&self, msg: Total);
+}
+
 // -- Helpers --------------------------------------------------------------------
 
 async fn spawn_calc(value: u32) -> TypedActorHandle<Calc> {
@@ -154,6 +167,25 @@ async fn generic_bound_combining_is_free() {
 async fn cfg_after_the_attribute_gates_the_whole_expansion() {
     let gated: GatedHandle = spawn_calc(1).await.into();
     gated.add(Add { amount: 2 }).tell().await.expect("tell");
+}
+
+#[tokio::test]
+async fn cfg_gated_methods_come_and_go_with_their_gate() {
+    // Both construction paths must size and fill the table from the surviving
+    // messages only.
+    let partial: PartialHandle = spawn_calc(5).await.into();
+    partial.add(Add { amount: 1 }).tell().await.expect("tell");
+    assert_eq!(partial.total(Total).ask().await.expect("ask"), 6);
+
+    let bound =
+        PartialHandle::try_bind(spawn_calc(2).await.erase_type()).expect("Calc speaks Partial");
+    assert_eq!(bound.total(Total).ask().await.expect("ask"), 2);
+
+    // And the static surface.
+    async fn drive(handle: impl Partial) -> u32 {
+        handle.total(Total).ask().await.expect("ask")
+    }
+    assert_eq!(drive(spawn_calc(9).await).await, 9);
 }
 
 #[tokio::test]

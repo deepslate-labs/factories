@@ -278,6 +278,12 @@ where
 }
 
 /// Implementation of a message handler for an actor.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not handle `{M}` messages",
+    label = "no `MessageHandler<{M}>` for this actor",
+    note = "declare a `#[handler]` for `{M}` in the actor's `#[messages]` block, or implement \
+            `MessageHandler<{M}>` by hand"
+)]
 pub trait MessageHandler<M: Message>: Actor {
     type AccessMode: AccessMode<Self> + 'static;
 

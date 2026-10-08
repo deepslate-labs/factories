@@ -19,16 +19,36 @@ enum Locality {
     Local,
 }
 
-/// One protocol message: the method name that fronts it, the binding name to
-/// forward, the message type, its index in the dispatcher table, and the
-/// attributes (docs, lints, ...) the user wrote on the method - re-emitted on
-/// the trait's declaration, where rustdoc and the lints pick them up.
 struct ProtocolMessage {
     attrs: Vec<Attribute>,
+    cfgs: Vec<Attribute>,
     method: Ident,
     binding: Ident,
     message: Type,
-    index: usize,
+}
+
+impl ProtocolMessage {
+    /// The complement of this message's gate - `#[cfg(not(all(...)))]` - for
+    /// the generated items that stand in when the message is compiled out.
+    fn not_cfg(&self) -> TokenStream {
+        let predicates = self
+            .cfgs
+            .iter()
+            .filter_map(|attr| match attr.meta.require_list() {
+                Ok(list) => Some(&list.tokens),
+                Err(error) => {
+                    util::emit_syn_error(error);
+                    None
+                }
+            });
+        quote!(#[cfg(not(all(#(#predicates),*)))])
+    }
+
+    /// The helper trait standing in for `MessageHandler<M>` in bounds when
+    /// the message is gated (see [`protocol`]).
+    fn speaks_ident(&self, trait_ident: &Ident) -> Ident {
+        format_ident!("__{}Speaks_{}", trait_ident, self.method)
+    }
 }
 
 /// A `#[cfg(...)]` attribute. (`cfg_attr` is deliberately not one: it attaches
@@ -52,6 +72,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let trait_ident = &input.ident;
     let vis = &input.vis;
     let handle_ident = format_ident!("{}Handle", trait_ident);
+    let dispatchers_ident = format_ident!("__{}Dispatchers", trait_ident);
 
     // Everything the user wrote on the trait stays on the trait. A `#[cfg]` is
     // additionally applied to the handle and every impl, so the expansion
@@ -99,10 +120,12 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     // `call_local` (unboxed, zero-cost), the erased impl wraps an `ErasedCall`.
     let trait_methods = messages.iter().map(|m| {
         let attrs = &m.attrs;
+        let cfgs = &m.cfgs;
         let sig = method_signature(m, &handle, &message, locality);
-        quote!(#(#attrs)* #sig;)
+        quote!(#(#attrs)* #(#cfgs)* #sig;)
     });
     let typed_methods = messages.iter().map(|m| {
+        let cfgs = &m.cfgs;
         let sig = method_signature(m, &handle, &message, locality);
         let binding = &m.binding;
         // Reuse the typed handle's own call path - nothing erased, nothing boxed.
@@ -110,35 +133,71 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             Locality::Shared => quote!(call),
             Locality::Local => quote!(call_local),
         };
-        quote!(#sig { self.#call(#binding) })
+        quote!(#(#cfgs)* #sig { self.#call(#binding) })
     });
     let handle_methods = messages.iter().map(|m| {
+        let cfgs = &m.cfgs;
         let sig = method_signature(m, &handle, &message, locality);
         let binding = &m.binding;
-        let index = m.index;
+        let slot = &m.method;
         let call_ty = match locality {
             Locality::Shared => quote!(#handle::MessageCall),
             Locality::Local => quote!(#handle::LocalMessageCall),
         };
         quote! {
+            #(#cfgs)*
             #sig {
-                // SAFETY: `dispatchers[#index]` was bound for this message on the
+                // SAFETY: `dispatchers.#slot` was bound for this message on the
                 //         actor behind `inner` when this handle was constructed.
                 #call_ty::new(unsafe {
-                    #actor::protocol::ErasedCall::new(&self.inner, self.dispatchers[#index], #binding)
+                    #actor::protocol::ErasedCall::new(&self.inner, self.dispatchers.#slot, #binding)
                 })
             }
         }
     });
 
+    // The bounds both impls demand: `MessageHandler<M>` per message. Stable Rust
+    // has no attributes on `where` predicates, so a gated message is bounded
+    // through a helper trait instead, which *is* `MessageHandler<M>` (as a
+    // supertrait, so the impls still get the bound elaborated) under the gate
+    // and an empty, always-implemented trait outside it.
     let handler_bounds = messages.iter().map(|m| {
         let msg = &m.message;
-        quote!(#actor::MessageHandler<#msg>)
+        if m.cfgs.is_empty() {
+            quote!(#actor::MessageHandler<#msg>)
+        } else {
+            let speaks = m.speaks_ident(trait_ident);
+            quote!(#speaks)
+        }
     });
     let handler_bounds_typed = handler_bounds.clone();
+    let speaks_traits = messages.iter().filter(|m| !m.cfgs.is_empty()).map(|m| {
+        let msg = &m.message;
+        let cfgs = &m.cfgs;
+        let not_cfg = m.not_cfg();
+        let speaks = m.speaks_ident(trait_ident);
+        quote! {
+            #(#cfg_attrs)* #(#cfgs)*
+            #[allow(non_camel_case_types)]
+            trait #speaks: #actor::MessageHandler<#msg> {}
+            #(#cfg_attrs)* #(#cfgs)*
+            impl<__T: #actor::MessageHandler<#msg>> #speaks for __T {}
 
-    // The cached dispatcher table - one entry per message, filled at construction.
-    let table_len = messages.len();
+            #(#cfg_attrs)* #not_cfg
+            #[allow(non_camel_case_types)]
+            trait #speaks {}
+            #(#cfg_attrs)* #not_cfg
+            impl<__T> #speaks for __T {}
+        }
+    });
+
+    // The cached dispatcher table - one slot per message, named after its
+    // method (so a gated message is just a gated field), filled at construction.
+    let dispatcher_slots = messages.iter().map(|m| {
+        let cfgs = &m.cfgs;
+        let slot = &m.method;
+        quote!(#(#cfgs)* #slot: #actor::dispatch::ActorMessageDispatcher,)
+    });
     let inner_ty = match locality {
         Locality::Shared => quote!(#handle::AnyActorHandle),
         Locality::Local => quote!(#handle::AnyLocalActorHandle),
@@ -149,7 +208,9 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let actor_ty = quote!(<__H as #handle::DerivedHandle>::Actor);
     let from_dispatchers = messages.iter().map(|m| {
         let msg = &m.message;
-        quote!(<#actor_ty as #actor::MessageHandler<#msg>>::DISPATCHER.into_dispatcher())
+        let cfgs = &m.cfgs;
+        let slot = &m.method;
+        quote!(#(#cfgs)* #slot: <#actor_ty as #actor::MessageHandler<#msg>>::DISPATCHER.into_dispatcher(),)
     });
     let (erase, send_sync_bounds) = match locality {
         Locality::Shared => (
@@ -165,16 +226,23 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     // `TryFrom<erased>`: registry-checked, table from `bind_dispatcher` per RTTI.
     let bind_lets = messages.iter().map(|m| {
         let msg = &m.message;
-        let slot = format_ident!("__d{}", m.index);
+        let cfgs = &m.cfgs;
+        let bound = format_ident!("__bound_{}", m.method);
         quote! {
-            let ::core::option::Option::Some(#slot) =
+            #(#cfgs)*
+            let ::core::option::Option::Some(#bound) =
                 #handle::ActorHandle::bind_dispatcher(&__any, <#msg as #message>::RTTI)
             else {
                 return ::core::result::Result::Err(__any);
             };
         }
     });
-    let bind_idents = messages.iter().map(|m| format_ident!("__d{}", m.index));
+    let bind_slots = messages.iter().map(|m| {
+        let cfgs = &m.cfgs;
+        let slot = &m.method;
+        let bound = format_ident!("__bound_{}", m.method);
+        quote!(#(#cfgs)* #slot: #bound,)
+    });
 
     let handle_doc = format!(
         "Erased handle for the [`{trait_ident}`] protocol: any actor speaking it, \
@@ -203,12 +271,20 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             #(#typed_methods)*
         }
 
+        #(#speaks_traits)*
+
+        #(#cfg_attrs)*
+        #[derive(::core::clone::Clone, ::core::marker::Copy, ::core::fmt::Debug)]
+        struct #dispatchers_ident {
+            #(#dispatcher_slots)*
+        }
+
         #(#cfg_attrs)*
         #[doc = #handle_doc]
         #[derive(::core::clone::Clone, ::core::fmt::Debug)]
         #vis struct #handle_ident {
             inner: #inner_ty,
-            dispatchers: [#actor::dispatch::ActorMessageDispatcher; #table_len],
+            dispatchers: #dispatchers_ident,
         }
 
         #(#cfg_attrs)*
@@ -221,7 +297,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             fn from(__handle: __H) -> Self {
                 let __handle = #handle::DerivedHandle::into_typed_handle(__handle);
                 Self {
-                    dispatchers: [ #(#from_dispatchers),* ],
+                    dispatchers: #dispatchers_ident { #(#from_dispatchers)* },
                     inner: __handle.#erase(),
                 }
             }
@@ -241,7 +317,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
                 #(#bind_lets)*
                 ::core::result::Result::Ok(Self {
                     inner: __any,
-                    dispatchers: [ #(#bind_idents),* ],
+                    dispatchers: #dispatchers_ident { #(#bind_slots)* },
                 })
             }
         }
@@ -354,32 +430,15 @@ fn collect_messages(input: &ItemTrait) -> Vec<ProtocolMessage> {
             }
         };
 
-        // The dispatcher table is sized here, so a message cannot come and go
-        // with a `cfg`
-        let attrs = function
-            .attrs
-            .iter()
-            .filter(|attr| {
-                if is_cfg(attr) {
-                    proc_macro_error::emit_error!(
-                        attr.span(),
-                        "#[protocol] methods cannot be `cfg`-gated individually (the handle's \
-                         dispatcher table is sized at expansion); gate the whole trait instead"
-                    );
-                    false
-                } else {
-                    true
-                }
-            })
-            .cloned()
-            .collect();
+        let (cfgs, attrs): (Vec<Attribute>, Vec<Attribute>) =
+            function.attrs.iter().cloned().partition(is_cfg);
 
         messages.push(ProtocolMessage {
             attrs,
+            cfgs,
             method: sig.ident.clone(),
             binding,
             message: (*param.ty).clone(),
-            index: messages.len(),
         });
     }
 
