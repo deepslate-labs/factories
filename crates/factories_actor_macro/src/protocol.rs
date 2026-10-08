@@ -51,12 +51,6 @@ impl ProtocolMessage {
     }
 }
 
-/// A `#[cfg(...)]` attribute. (`cfg_attr` is deliberately not one: it attaches
-/// arbitrary attributes, which rarely make sense on every generated item.)
-fn is_cfg(attr: &Attribute) -> bool {
-    attr.path().is_ident("cfg")
-}
-
 pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let (locality, krate) = parse_attrs(&attrs);
 
@@ -78,7 +72,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     // additionally applied to the handle and every impl, so the expansion
     // disappears as one unit when the trait does.
     let trait_attrs = &input.attrs;
-    let cfg_attrs: Vec<&Attribute> = input.attrs.iter().filter(|attr| is_cfg(attr)).collect();
+    let cfg_attrs: Vec<&Attribute> = util::cfgs(&input.attrs).collect();
 
     // The effective supertraits: a shared protocol is `Send + Sync` (plus
     // whatever the user wrote), so both its impls must prove `Self: Send + Sync`.
@@ -431,7 +425,7 @@ fn collect_messages(input: &ItemTrait) -> Vec<ProtocolMessage> {
         };
 
         let (cfgs, attrs): (Vec<Attribute>, Vec<Attribute>) =
-            function.attrs.iter().cloned().partition(is_cfg);
+            function.attrs.iter().cloned().partition(util::is_cfg);
 
         messages.push(ProtocolMessage {
             attrs,

@@ -7,7 +7,24 @@ use quote::{ToTokens, quote};
 use syn::meta::ParseNestedMeta;
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{DeriveInput, Ident, LitStr, Result};
+use syn::{Attribute, DeriveInput, Ident, LitStr, Result};
+
+/// A `#[cfg(...)]` attribute. (`cfg_attr` is deliberately not one: it attaches
+/// arbitrary attributes, which rarely make sense on every generated item.)
+pub fn is_cfg(attr: &Attribute) -> bool {
+    attr.path().is_ident("cfg")
+}
+
+/// The `#[cfg]` attributes among `attrs`: re-emitted on every item generated
+/// for the thing they were written on, so it comes and goes as a whole.
+pub fn cfgs(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
+    attrs.iter().filter(|attr| is_cfg(attr))
+}
+
+/// The `#[doc ...]` attributes among `attrs`.
+pub fn docs(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
+    attrs.iter().filter(|attr| attr.path().is_ident("doc"))
+}
 
 /// Parse `= <value>` into the slot.
 ///

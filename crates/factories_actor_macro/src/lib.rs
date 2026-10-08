@@ -99,6 +99,12 @@ pub fn derive_message(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 ///   `dynamic-dispatch` feature of `factories_actor` is disabled, mirroring
 ///   the default runtime binder).
 ///
+/// Attributes on a handler stay on the method. Its doc comments are also
+/// copied onto the generated message, and a `#[cfg]` on the method gates
+/// everything generated for it - message, `MessageHandler` impl, registration
+/// and typed-handle method - so a handler can come and go with a feature. The
+/// same holds for a `#[cfg]` on an `#[event_source]` or a lifecycle hook.
+///
 /// Parameter markers re-route dispatch machinery into a parameter instead of
 /// treating it as a message field. The macro never inspects parameter types -
 /// the generated method call checks them:

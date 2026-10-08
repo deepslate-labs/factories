@@ -449,12 +449,17 @@ fn expand_lifecycle_hook(
         quote!(#work::into_work::<#converter, _>(#call))
     };
 
+    // A `#[cfg]` on the hook gates both impls as well, not just the method.
+    let cfgs: Vec<&Attribute> = util::cfgs(&function.attrs).collect();
+
     match hook {
         Hook::Start => quote! {
+            #(#cfgs)*
             impl #self_ty {
                 #renamed
             }
 
+            #(#cfgs)*
             impl #lifecycle::OnStartHook for #self_ty {
                 fn __erased_on_start<'__hook>(
                     &'__hook mut self,
@@ -465,10 +470,12 @@ fn expand_lifecycle_hook(
             }
         },
         Hook::Stop => quote! {
+            #(#cfgs)*
             impl #self_ty {
                 #renamed
             }
 
+            #(#cfgs)*
             impl #lifecycle::OnStopHook for #self_ty {
                 fn __erased_on_stop<'__hook>(
                     self,
@@ -560,7 +567,10 @@ fn expand_event_source(
     let mut next_event = function.clone();
     next_event.sig.ident = Ident::new("next_event", function.sig.ident.span());
 
+    // A `#[cfg]` on the source gates the impl as well, not just the method.
+    let cfgs = util::cfgs(&function.attrs);
     Some(quote! {
+        #(#cfgs)*
         impl #krate::actor::event::ActorEventSource for #self_ty {
             #next_event
         }
@@ -618,6 +628,12 @@ fn expand_handler(
     }
 
     let signature = &function.sig;
+
+    // The handler's own attributes stay on the re-emitted method. Its docs are
+    // copied onto the generated message (the message *is* the handler, seen
+    // from outside), and a `#[cfg]` gates every generated piece along with it.
+    let cfgs: Vec<&Attribute> = util::cfgs(&function.attrs).collect();
+    let docs: Vec<&Attribute> = util::docs(&function.attrs).collect();
 
     if !signature.generics.params.is_empty() || signature.generics.where_clause.is_some() {
         proc_macro_error::emit_error!(signature.generics.span(), "handlers cannot be generic");
@@ -892,7 +908,14 @@ fn expand_handler(
 
             (
                 message_ident.to_token_stream(),
-                quote!(#declaration #message_impl),
+                quote! {
+                    #(#cfgs)*
+                    #(#docs)*
+                    #declaration
+
+                    #(#cfgs)*
+                    #message_impl
+                },
                 destructure,
             )
         }
@@ -1017,6 +1040,7 @@ fn expand_handler(
     let items = quote! {
         #message_decl
 
+        #(#cfgs)*
         #krate::implement_message_handler! {
             impl MessageHandler<#message_ty> for #self_ty {
                 type AccessMode = #access;
@@ -1025,6 +1049,7 @@ fn expand_handler(
             }
         }
 
+        #(#cfgs)*
         #krate::cfg_dynamic_dispatch! {
             #krate::register_dynamic_handler!(#self_ty, #message_ty);
         }
@@ -1057,6 +1082,7 @@ fn expand_handler(
         };
 
     let method = quote! {
+        #(#cfgs)*
         #vis fn #fn_ident(
             &self,
             #(#method_args),*

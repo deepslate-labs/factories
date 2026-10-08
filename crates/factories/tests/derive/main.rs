@@ -21,8 +21,10 @@
 //! - [`event_source`]: `#[event_source]` - the derive's autoref-detected driver
 //! - [`failure`]: actor failure - `die_on_err` modes, `#[context]` fail
 //! - [`template`]: `ActorTemplate` bundles
+//! - [`attributes`]: docs and `#[cfg]` on `#[messages]` methods
 
 mod actor;
+mod attributes;
 mod event_source;
 mod extensions;
 mod failure;
