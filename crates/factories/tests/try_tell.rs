@@ -66,7 +66,10 @@ async fn erased_protocol_try_tell_delivers() {
     let tally = spawn_tally().await;
     let bumper: BumpingHandle = tally.clone().into();
 
-    bumper.bump(Bump).try_tell().expect("room in a fresh mailbox");
+    bumper
+        .bump(Bump)
+        .try_tell()
+        .expect("room in a fresh mailbox");
 
     assert_eq!(tally.count().await.expect("ask"), 1);
 }

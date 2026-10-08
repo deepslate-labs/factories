@@ -17,9 +17,9 @@
 //!   `actor.id` / `actor.name` plus the per-message span's causal parent chain.
 
 use crate::actor::channel::ActorChannelSendError;
-use crate::actor::lifecycle::TerminationKind;
 #[cfg(feature = "tracing")]
 use crate::actor::lifecycle::CapturedPanic;
+use crate::actor::lifecycle::TerminationKind;
 use crate::actor::supervision::ActorId;
 use core::future::Future;
 
@@ -102,7 +102,11 @@ pub(crate) async fn run_on_stop<F: Future>(_: &'static str, _: ActorId, fut: F) 
 /// Emit the "actor started" event, once the actor has reached `Running`.
 #[cfg(feature = "tracing")]
 pub(crate) fn actor_started(actor: &'static str, id: ActorId) {
-    tracing::debug!(actor.name = actor, actor.id = id.as_usize() as u64, "actor started");
+    tracing::debug!(
+        actor.name = actor,
+        actor.id = id.as_usize() as u64,
+        "actor started"
+    );
 }
 
 /// No-op without the `tracing` feature.
@@ -114,9 +118,19 @@ pub(crate) fn actor_started(_: &'static str, _: ActorId) {}
 #[cfg(feature = "tracing")]
 pub(crate) fn actor_stopped(actor: &'static str, id: ActorId, outcome: &'static str, failed: bool) {
     if failed {
-        tracing::warn!(actor.name = actor, actor.id = id.as_usize() as u64, outcome, "actor stopped");
+        tracing::warn!(
+            actor.name = actor,
+            actor.id = id.as_usize() as u64,
+            outcome,
+            "actor stopped"
+        );
     } else {
-        tracing::debug!(actor.name = actor, actor.id = id.as_usize() as u64, outcome, "actor stopped");
+        tracing::debug!(
+            actor.name = actor,
+            actor.id = id.as_usize() as u64,
+            outcome,
+            "actor stopped"
+        );
     }
 }
 
@@ -139,14 +153,23 @@ pub(crate) fn stop_hook_panicked(actor: &'static str, id: ActorId, panic: &Captu
 
 /// No-op without the `tracing` feature.
 #[cfg(not(feature = "tracing"))]
-pub(crate) fn stop_hook_panicked(_: &'static str, _: ActorId, _: &crate::actor::lifecycle::CapturedPanic) {}
+pub(crate) fn stop_hook_panicked(
+    _: &'static str,
+    _: ActorId,
+    _: &crate::actor::lifecycle::CapturedPanic,
+) {
+}
 
 /// Emit the "actor aborted" event for the terminal drop path (task abort /
 /// uncaptured panic), where neither the stop hook nor the clean stopped event
 /// ran. `WARN`, since an abort is an abnormal outcome.
 #[cfg(feature = "tracing")]
 pub(crate) fn actor_aborted(actor: &'static str, id: ActorId) {
-    tracing::warn!(actor.name = actor, actor.id = id.as_usize() as u64, "actor aborted");
+    tracing::warn!(
+        actor.name = actor,
+        actor.id = id.as_usize() as u64,
+        "actor aborted"
+    );
 }
 
 /// No-op without the `tracing` feature.
@@ -176,7 +199,7 @@ pub(crate) fn terminated_delivery_failed(
     watched: &'static str,
     id: ActorId,
     kind: TerminationKind,
-    error: &ActorChannelSendError
+    error: &ActorChannelSendError,
 ) {
     tracing::warn!(
         actor.name = watched,
@@ -193,5 +216,6 @@ pub(crate) fn terminated_delivery_failed(
     _watched: &'static str,
     _id: ActorId,
     _kind: TerminationKind,
-    _error: &ActorChannelSendError
-) {}
+    _error: &ActorChannelSendError,
+) {
+}

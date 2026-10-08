@@ -133,7 +133,6 @@ mod arm {
         }
         value
     }
-
 }
 
 #[cfg(test)]

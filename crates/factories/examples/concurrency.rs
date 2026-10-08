@@ -68,7 +68,12 @@ impl Cache {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache = ActorLauncher::default()
-        .spawn_ready(&TokioTaskSpawner::current(), Cache { entries: HashMap::new() })
+        .spawn_ready(
+            &TokioTaskSpawner::current(),
+            Cache {
+                entries: HashMap::new(),
+            },
+        )
         .await?;
 
     // Populate the cache. Each `insert` is an exclusive write, so these serialize
@@ -96,7 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("peak concurrent lookups: {peak}");
 
     // Each lookup sleeps 50ms. Serially that's ~400ms; overlapped it's ~50ms.
-    assert!(peak > 1, "the concurrent loop + RwLock should overlap the reads");
+    assert!(
+        peak > 1,
+        "the concurrent loop + RwLock should overlap the reads"
+    );
     assert!(
         elapsed < Duration::from_millis(8 * 50),
         "overlapped reads should finish far faster than running them one by one"

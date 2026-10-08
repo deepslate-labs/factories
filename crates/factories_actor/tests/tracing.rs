@@ -1,4 +1,8 @@
-#![cfg(all(feature = "tracing", feature = "tokio-runtime", feature = "tokio-answer"))]
+#![cfg(all(
+    feature = "tracing",
+    feature = "tokio-runtime",
+    feature = "tokio-answer"
+))]
 
 //! Behavioural tests for the framework's `tracing` instrumentation.
 //!
@@ -17,9 +21,7 @@ use factories_actor::actor::lifecycle::StopReason;
 use factories_actor::actor::rtti::ActorRtti;
 use factories_actor::actor::supervision::Terminated;
 use factories_actor::actor::work::IntoRunLoopWork;
-use factories_actor::actor::{
-    Actor, ActorContext, ActorRunLoop, MessageHandler, StaticOnlyBinder,
-};
+use factories_actor::actor::{Actor, ActorContext, ActorRunLoop, MessageHandler, StaticOnlyBinder};
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::{TokioMpscActorChannel, TokioTaskSpawner};
@@ -73,7 +75,8 @@ impl Visit for MapVisitor {
         self.0.insert(field.name().to_string(), value.to_string());
     }
     fn record_debug(&mut self, field: &Field, value: &dyn core::fmt::Debug) {
-        self.0.insert(field.name().to_string(), format!("{value:?}"));
+        self.0
+            .insert(field.name().to_string(), format!("{value:?}"));
     }
 }
 
@@ -404,7 +407,8 @@ async fn failing_handler_span_records_error_type() {
 
     // error.type is a standard semantic field, emitted under plain `tracing`.
     assert!(
-        span.field("error.type").is_some_and(|t| t.contains("Kaboom")),
+        span.field("error.type")
+            .is_some_and(|t| t.contains("Kaboom")),
         "the span records the error type, got {:?}",
         span.field("error.type")
     );
@@ -609,7 +613,11 @@ async fn message_handler_span_carries_otel_fields() {
     // collapsing under the static span name. Kind stays INTERNAL (the default),
     // so we deliberately do NOT stamp otel.kind.
     assert_eq!(span.field("otel.name"), Some("Pinged.Ping"));
-    assert_eq!(span.field("otel.kind"), None, "in-process dispatch is INTERNAL");
+    assert_eq!(
+        span.field("otel.kind"),
+        None,
+        "in-process dispatch is INTERNAL"
+    );
 }
 
 #[tokio::test]
@@ -632,9 +640,9 @@ async fn message_handler_span_parents_to_the_call_site() {
     }
 
     assert!(caller_id.is_some(), "the caller span is enabled");
-    let parented = all_records().into_iter().any(|r| {
-        r.is_span && r.name == "factories.handle_message" && r.parent == caller_id
-    });
+    let parented = all_records()
+        .into_iter()
+        .any(|r| r.is_span && r.name == "factories.handle_message" && r.parent == caller_id);
     assert!(
         parented,
         "the handler span must be parented to the send-site span"

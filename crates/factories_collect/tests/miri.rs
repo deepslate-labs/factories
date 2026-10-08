@@ -1,6 +1,6 @@
 use factories_collect::{
-    global_collection, register_global_collection_entry, unsafe_run_on_binary_load,
-    GlobalCollection, GlobalCollectionEntry, GlobalCollectionIter,
+    GlobalCollection, GlobalCollectionEntry, GlobalCollectionIter, global_collection,
+    register_global_collection_entry, unsafe_run_on_binary_load,
 };
 use std::sync::Barrier;
 

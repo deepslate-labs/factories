@@ -144,7 +144,10 @@ impl<'a, M: Message> ErasedCall<'a, M> {
     }
 
     /// Build the sendable for this call, optionally carrying an answer sender.
-    fn sendable(self, answer: Option<AnswerSender<M>>) -> Box<dyn DynActorChannelSendable<'a> + 'a> {
+    fn sendable(
+        self,
+        answer: Option<AnswerSender<M>>,
+    ) -> Box<dyn DynActorChannelSendable<'a> + 'a> {
         // SAFETY: `dispatcher` dispatches `M` to `inner`'s actor (asserted at `new`).
         let message = unsafe { dispatched(self.dispatcher, self.message, answer) };
         // SAFETY: same contract - the dispatcher is bound for `inner`'s actor.

@@ -88,6 +88,9 @@ async fn buffered_sink_writes_a_decodable_capture() {
     }
 
     assert!(saw_spawn, "Node's spawn should be captured: {decoded:?}");
-    assert!(saw_ping, "the ping message edge should be captured: {decoded:?}");
+    assert!(
+        saw_ping,
+        "the ping message edge should be captured: {decoded:?}"
+    );
     assert!(saw_death, "Node's death should be captured: {decoded:?}");
 }

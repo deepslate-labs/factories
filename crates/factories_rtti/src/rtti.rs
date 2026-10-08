@@ -1,6 +1,6 @@
+use crate::AutorefSpecialized;
 use alloc::boxed::Box;
 use core::any::TypeId;
-use crate::AutorefSpecialized;
 
 /// Basic type information required by some library functions.
 #[derive(Debug, Copy, Clone)]
@@ -124,10 +124,7 @@ impl CloneRtti {
     ///
     /// # Safety
     /// The caller must ensure that `src` is a valid pointer to T.
-    pub unsafe fn clone_into_box(
-        &self,
-        src: *const core::ffi::c_void
-    ) -> *mut core::ffi::c_void {
+    pub unsafe fn clone_into_box(&self, src: *const core::ffi::c_void) -> *mut core::ffi::c_void {
         // SAFETY: The caller has ensured that src is valid.
         unsafe { (self.clone_into_box)(src) }
     }
@@ -179,15 +176,12 @@ impl CloneRtti {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SendSyncRtti {
     send: AutorefSpecialized<bool>,
-    sync: AutorefSpecialized<bool>
+    sync: AutorefSpecialized<bool>,
 }
 
 impl SendSyncRtti {
     /// Create the sync/sync information.
-    pub const fn new(
-        send: AutorefSpecialized<bool>,
-        sync: AutorefSpecialized<bool>,
-    ) -> Self {
+    pub const fn new(send: AutorefSpecialized<bool>, sync: AutorefSpecialized<bool>) -> Self {
         Self { send, sync }
     }
 
@@ -205,16 +199,18 @@ impl SendSyncRtti {
 #[macro_export]
 macro_rules! create_send_sync_rtti {
     ($type:ty) => {
-        const { $crate::rtti::SendSyncRtti::new(
-            $crate::autoref_specialize!($type -> bool {
-                ::core::marker::Send => true,
-                _ => false,
-            }),
-            $crate::autoref_specialize!($type -> bool {
-                ::core::marker::Sync => true,
-                _ => false,
-            }),
-        ) }
+        const {
+            $crate::rtti::SendSyncRtti::new(
+                $crate::autoref_specialize!($type -> bool {
+                    ::core::marker::Send => true,
+                    _ => false,
+                }),
+                $crate::autoref_specialize!($type -> bool {
+                    ::core::marker::Sync => true,
+                    _ => false,
+                }),
+            )
+        }
     };
 }
 

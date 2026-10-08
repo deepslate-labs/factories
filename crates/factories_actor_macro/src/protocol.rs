@@ -287,7 +287,10 @@ fn collect_messages(input: &ItemTrait) -> Vec<ProtocolMessage> {
             );
         }
         if !sig.generics.params.is_empty() {
-            proc_macro_error::emit_error!(sig.generics.span(), "#[protocol] methods cannot be generic");
+            proc_macro_error::emit_error!(
+                sig.generics.span(),
+                "#[protocol] methods cannot be generic"
+            );
         }
         if !matches!(sig.output, ReturnType::Default) {
             proc_macro_error::emit_error!(
@@ -299,14 +302,21 @@ fn collect_messages(input: &ItemTrait) -> Vec<ProtocolMessage> {
 
         // Must be `&self` plus exactly one message parameter.
         let Some(receiver) = sig.receiver() else {
-            proc_macro_error::emit_error!(sig.ident.span(), "#[protocol] methods must take `&self`");
+            proc_macro_error::emit_error!(
+                sig.ident.span(),
+                "#[protocol] methods must take `&self`"
+            );
             continue;
         };
         if receiver.reference.is_none() || receiver.mutability.is_some() {
             proc_macro_error::emit_error!(receiver.span(), "#[protocol] methods must take `&self`");
         }
 
-        let params: Vec<&FnArg> = sig.inputs.iter().filter(|a| matches!(a, FnArg::Typed(_))).collect();
+        let params: Vec<&FnArg> = sig
+            .inputs
+            .iter()
+            .filter(|a| matches!(a, FnArg::Typed(_)))
+            .collect();
         let [FnArg::Typed(param)] = params.as_slice() else {
             proc_macro_error::emit_error!(
                 sig.ident.span(),

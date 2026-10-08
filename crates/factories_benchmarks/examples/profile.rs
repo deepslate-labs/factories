@@ -51,7 +51,10 @@ fn main() {
             "factories-big" => {
                 let h = fac::spawn(0).await;
                 for _ in 0..n {
-                    h.tell(fac::IncBig { _payload: [0; 32] }).send().await.unwrap();
+                    h.tell(fac::IncBig { _payload: [0; 32] })
+                        .send()
+                        .await
+                        .unwrap();
                 }
                 let v = h.ask(fac::Get).exchange().await.unwrap();
                 assert_eq!(v, n);

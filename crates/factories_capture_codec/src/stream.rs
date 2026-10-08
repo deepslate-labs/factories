@@ -147,8 +147,12 @@ mod tests {
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].anchor.tick, 1000);
         assert_eq!(segs[1].anchor.tick, 2000);
-        assert!(matches!(segs[0].records[0], Record::Spawned { actor_id, .. } if actor_id.get() == 5));
-        assert!(matches!(segs[1].records[0], Record::Message { actor_id, .. } if actor_id.get() == 9));
+        assert!(
+            matches!(segs[0].records[0], Record::Spawned { actor_id, .. } if actor_id.get() == 5)
+        );
+        assert!(
+            matches!(segs[1].records[0], Record::Message { actor_id, .. } if actor_id.get() == 9)
+        );
     }
 
     #[test]

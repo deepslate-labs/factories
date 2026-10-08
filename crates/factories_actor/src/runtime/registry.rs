@@ -488,7 +488,10 @@ mod tests {
         DISPATCH_A_CALLS.fetch_add(1, Ordering::Relaxed);
         let erased: <SendFutureConverter as WorkConverter>::Erased<'ctx> =
             into_work::<SendFutureConverter, _>(async {});
-        unsafe { out.cast::<<SendFutureConverter as WorkConverter>::Erased<'ctx>>().write(erased) };
+        unsafe {
+            out.cast::<<SendFutureConverter as WorkConverter>::Erased<'ctx>>()
+                .write(erased)
+        };
     }
 
     unsafe fn dispatch_b<'ctx>(
@@ -499,7 +502,10 @@ mod tests {
         DISPATCH_B_CALLS.fetch_add(1, Ordering::Relaxed);
         let erased: <SendFutureConverter as WorkConverter>::Erased<'ctx> =
             into_work::<SendFutureConverter, _>(async {});
-        unsafe { out.cast::<<SendFutureConverter as WorkConverter>::Erased<'ctx>>().write(erased) };
+        unsafe {
+            out.cast::<<SendFutureConverter as WorkConverter>::Erased<'ctx>>()
+                .write(erased)
+        };
     }
 
     /// Invoke a bound dispatcher the way a run loop would.

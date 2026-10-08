@@ -2,7 +2,7 @@ use crate::actor::channel::DynActorChannel;
 use crate::actor::dispatch::ActorMessageDispatcher;
 use crate::actor::rtti::ActorRtti;
 use crate::actor::state::SharedActorState;
-use crate::actor::supervision::{Subscription, ActorId};
+use crate::actor::supervision::{ActorId, Subscription};
 use crate::actor::task::ActorTaskHandle;
 use crate::actor::{Actor, ActorRuntimeBinder};
 use crate::message::rtti::MessageRtti;

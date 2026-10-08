@@ -64,7 +64,10 @@ impl<T> GlobalCollection<T> {
 
             let new_head = core::ptr::from_ref(entry).cast_mut();
 
-            match self.head.compare_exchange(head, new_head, Ordering::Release, Ordering::Relaxed) {
+            match self
+                .head
+                .compare_exchange(head, new_head, Ordering::Release, Ordering::Relaxed)
+            {
                 Ok(_) => return,
                 Err(current_head) => head = current_head,
             }
@@ -111,7 +114,9 @@ enum GlobalCollectionIterState<'a, T: 'static> {
 impl<'a, T> GlobalCollectionIter<'a, T> {
     /// Create a new iterator over the given global collection.
     pub const fn new(collection: &'a GlobalCollection<T>) -> Self {
-        Self { state: GlobalCollectionIterState::Uninitialized(collection) }
+        Self {
+            state: GlobalCollectionIterState::Uninitialized(collection),
+        }
     }
 }
 
@@ -126,7 +131,7 @@ impl<'a, T> Iterator for GlobalCollectionIter<'a, T> {
                     self.state = GlobalCollectionIterState::Done;
                     return None;
                 }
-            }
+            },
             GlobalCollectionIterState::Iterating(entry) => *entry,
             GlobalCollectionIterState::Done => return None,
         };
@@ -203,7 +208,7 @@ macro_rules! register_global_collection_entry {
     ($collection:path, $entry:path) => {
         $crate::unsafe_run_on_binary_load!(|| {
             // Typecheck...
-            let collection = $collection as &'static $crate::GlobalCollection::<_>;
+            let collection = $collection as &'static $crate::GlobalCollection<_>;
             collection.register(&$entry);
         });
     };

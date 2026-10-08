@@ -40,6 +40,8 @@ fn pin_iter<T>(slice: Pin<&mut [T]>) -> impl Iterator<Item = Pin<&mut T>> {
 }
 
 /// Select a future from the array of futures, biased towards lower indices.
-pub const fn select_biased<const COUNT: usize, F: Future>(futures: [F; COUNT]) -> BiasedFutureSelect<COUNT, F> {
+pub const fn select_biased<const COUNT: usize, F: Future>(
+    futures: [F; COUNT],
+) -> BiasedFutureSelect<COUNT, F> {
     BiasedFutureSelect::new(futures)
 }

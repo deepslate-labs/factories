@@ -174,7 +174,9 @@ impl Segment {
     pub fn event_unix_micros(&self) -> Vec<u64> {
         let open_tick = self.anchor.tick;
         let tick_span = self.close_tick.saturating_sub(open_tick);
-        let mono_span = self.close_mono_micros.saturating_sub(self.anchor.mono_micros);
+        let mono_span = self
+            .close_mono_micros
+            .saturating_sub(self.anchor.mono_micros);
 
         let mut abs_tick = open_tick;
         let mut times = Vec::with_capacity(self.records.len());
@@ -602,14 +604,21 @@ mod tests {
         let mut enc = SegmentEncoder::new(a);
         assert_eq!(enc.intern_interpretation(b"audio"), 0);
         assert_eq!(enc.intern_interpretation(b"image"), 1);
-        assert_eq!(enc.intern_interpretation(b"audio"), 0, "interpretations dedup");
+        assert_eq!(
+            enc.intern_interpretation(b"audio"),
+            0,
+            "interpretations dedup"
+        );
         assert_eq!(enc.intern_schema(b"\x05\x01"), 0);
         assert_eq!(enc.intern_schema(b"\x05\x01"), 0, "schemas dedup");
 
         let bytes = enc.finish(a.mono_micros + 1000, a.tick + 1000);
         let (seg, _) = decode_segment(&bytes).expect("decodes");
 
-        assert_eq!(seg.interpretations, vec![b"audio".to_vec(), b"image".to_vec()]);
+        assert_eq!(
+            seg.interpretations,
+            vec![b"audio".to_vec(), b"image".to_vec()]
+        );
         assert_eq!(seg.schemas, vec![b"\x05\x01".to_vec()]);
     }
 
@@ -636,7 +645,10 @@ mod tests {
             nz(9),
             "Gadget",
             Some(nz(5)),
-            Some(EventRef { actor: nz(5), seq: 1 }),
+            Some(EventRef {
+                actor: nz(5),
+                seq: 1,
+            }),
         );
         enc.spawned(a.tick + 260, 2, nz(12), "Widget", Some(nz(5)), None); // reuses "Widget"
         let bytes = enc.finish(a.mono_micros + 1000, a.tick + 100_000);
@@ -666,7 +678,10 @@ mod tests {
                 actor_id: nz(9),
                 actor_type: 1,
                 parent: Some(nz(5)),
-                caused_by: Some(EventRef { actor: nz(5), seq: 1 }),
+                caused_by: Some(EventRef {
+                    actor: nz(5),
+                    seq: 1
+                }),
             }
         );
         assert_eq!(
@@ -694,7 +709,10 @@ mod tests {
             Some(nz(7)),
             "Pong",
             1,
-            Some(EventRef { actor: nz(7), seq: 1 }),
+            Some(EventRef {
+                actor: nz(7),
+                seq: 1,
+            }),
             &[],
         );
         let bytes = enc.finish(a.mono_micros + 1000, a.tick + 100_000);
@@ -722,7 +740,10 @@ mod tests {
                 from: Some(nz(7)),
                 message_type: 1,
                 dispatch: 1,
-                caused_by: Some(EventRef { actor: nz(7), seq: 1 }),
+                caused_by: Some(EventRef {
+                    actor: nz(7),
+                    seq: 1
+                }),
                 payload: Vec::new(),
             }
         );
@@ -738,7 +759,10 @@ mod tests {
             nz(5),
             "Widget",
             2,
-            Some(EventRef { actor: nz(5), seq: 1 }),
+            Some(EventRef {
+                actor: nz(5),
+                seq: 1,
+            }),
         );
         let bytes = enc.finish(a.mono_micros + 1000, a.tick + 100_000);
         let (seg, _) = decode_segment(&bytes).expect("decodes");
@@ -750,7 +774,10 @@ mod tests {
                 actor_id: nz(5),
                 actor_type: 0,
                 reason: 2,
-                caused_by: Some(EventRef { actor: nz(5), seq: 1 }),
+                caused_by: Some(EventRef {
+                    actor: nz(5),
+                    seq: 1
+                }),
             }
         );
     }

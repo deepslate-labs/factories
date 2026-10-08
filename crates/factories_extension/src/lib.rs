@@ -178,7 +178,11 @@ impl ExtensionSet {
             let Some(clone) = entry.clone else {
                 continue; // local: never inherited
             };
-            if self.entries.iter().any(|existing| existing.key == entry.key) {
+            if self
+                .entries
+                .iter()
+                .any(|existing| existing.key == entry.key)
+            {
                 continue; // already set here: inheritance never overwrites
             }
 
@@ -186,7 +190,8 @@ impl ExtensionSet {
             // `clone` is that same `T`'s `CloneRtti`, so this clones exactly one
             // correctly-typed `T` into a fresh box.
             let cloned = unsafe { clone.clone_into_box(entry.value.as_ptr().cast_const()) };
-            let value = NonNull::new(cloned.cast::<c_void>()).expect("clone returns a non-null box");
+            let value =
+                NonNull::new(cloned.cast::<c_void>()).expect("clone returns a non-null box");
             self.entries.push(Entry {
                 key: entry.key,
                 value,
@@ -284,10 +289,18 @@ mod tests {
         {
             let mut set = ExtensionSet::new();
             set.insert(T, Tracked);
-            assert_eq!(DROPS.load(Ordering::SeqCst), 0, "value lives while the set holds it");
+            assert_eq!(
+                DROPS.load(Ordering::SeqCst),
+                0,
+                "value lives while the set holds it"
+            );
         }
 
-        assert_eq!(DROPS.load(Ordering::SeqCst), 1, "value dropped exactly once with the set");
+        assert_eq!(
+            DROPS.load(Ordering::SeqCst),
+            1,
+            "value dropped exactly once with the set"
+        );
     }
 
     #[test]
@@ -318,7 +331,11 @@ mod tests {
         child.inherit_inheritable_from(&parent);
 
         // Explicit wins regardless of order: inheritance fills absent keys only.
-        assert_eq!(child.get(K), Some(&1), "an explicit value is never clobbered by inheritance");
+        assert_eq!(
+            child.get(K),
+            Some(&1),
+            "an explicit value is never clobbered by inheritance"
+        );
     }
 
     #[test]
@@ -339,7 +356,11 @@ mod tests {
         set.insert(K, Tracked(2));
 
         assert_eq!(set.get(K).map(|t| t.0), Some(2), "the later insert wins");
-        assert_eq!(DROPS.load(Ordering::SeqCst), 1, "the replaced value is dropped at once");
+        assert_eq!(
+            DROPS.load(Ordering::SeqCst),
+            1,
+            "the replaced value is dropped at once"
+        );
     }
 
     #[test]

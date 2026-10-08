@@ -68,7 +68,6 @@ impl Counter {
     }
 }
 
-
 /// A plain struct, not an actor: it just owns erased subscriber handles and fans
 /// messages out. The room neither knows nor cares whether an entry is a `Logger`,
 /// a `Counter`, or some type it has never heard of - only that it speaks the
@@ -88,7 +87,9 @@ impl ChatRoom {
     async fn broadcast(&self, text: &str) {
         for subscriber in &self.subscribers {
             subscriber
-                .notify(ChatMessage { text: text.to_owned() })
+                .notify(ChatMessage {
+                    text: text.to_owned(),
+                })
                 .tell()
                 .await
                 .expect("subscriber mailbox accepts the broadcast");
@@ -103,7 +104,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn the two distinct subscriber actors. `spawn_ready` hands back each
     // actor's generated typed handle (`LoggerHandle`, `CounterHandle`).
     let logger = ActorLauncher::default()
-        .spawn_ready(&spawner, Logger { transcript: Vec::new() })
+        .spawn_ready(
+            &spawner,
+            Logger {
+                transcript: Vec::new(),
+            },
+        )
         .await?;
     let counter = ActorLauncher::default()
         .spawn_ready(&spawner, Counter { seen: 0 })

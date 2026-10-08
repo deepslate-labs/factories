@@ -80,8 +80,7 @@ pub fn derive_actor(input: DeriveInput) -> TokenStream {
     let (channel_default, error_default, binder_default, lock_default, run_loop_default) =
         match &config.template {
             Some(template) => {
-                let template =
-                    quote!(<#template as #krate::runtime::template::ActorTemplate>);
+                let template = quote!(<#template as #krate::runtime::template::ActorTemplate>);
                 (
                     quote!(#template::Channel),
                     quote!(#template::Error),

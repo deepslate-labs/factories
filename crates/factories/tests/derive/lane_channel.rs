@@ -17,7 +17,8 @@ use factories::runtime::lock::{self, UnguardedLock};
 use factories::runtime::routing::ActorMessagePriorityRouter;
 use factories::runtime::sequential_loop::SequentialRunLoop;
 use factories::runtime::tokio::{
-    TokioMpscMultiLineActorChannel, TokioMpscChannelCapacity, TokioMpscChannelOptions, TokioTaskSpawner,
+    TokioMpscChannelCapacity, TokioMpscChannelOptions, TokioMpscMultiLineActorChannel,
+    TokioTaskSpawner,
 };
 use factories::spawn::ActorLauncher;
 

@@ -57,16 +57,41 @@ mod tests {
 
     #[test]
     fn uvarint_rejects_truncated_and_overlong_input() {
-        assert_eq!(read_uvarint(&[]), Err(DecodeError::UnexpectedEof), "empty input");
-        assert_eq!(read_uvarint(&[0x80]), Err(DecodeError::UnexpectedEof), "continuation, no next");
-        assert_eq!(read_uvarint(&[0x80, 0x80]), Err(DecodeError::UnexpectedEof), "truncated");
-        assert_eq!(read_uvarint(&[0x80; 10]), Err(DecodeError::OverlongVarint), "overlong");
+        assert_eq!(
+            read_uvarint(&[]),
+            Err(DecodeError::UnexpectedEof),
+            "empty input"
+        );
+        assert_eq!(
+            read_uvarint(&[0x80]),
+            Err(DecodeError::UnexpectedEof),
+            "continuation, no next"
+        );
+        assert_eq!(
+            read_uvarint(&[0x80, 0x80]),
+            Err(DecodeError::UnexpectedEof),
+            "truncated"
+        );
+        assert_eq!(
+            read_uvarint(&[0x80; 10]),
+            Err(DecodeError::OverlongVarint),
+            "overlong"
+        );
     }
 
     #[test]
     fn uvarint_round_trips_across_byte_boundaries() {
         for value in [
-            0u64, 1, 127, 128, 300, 16_383, 16_384, 2_097_151, 2_097_152, u64::MAX,
+            0u64,
+            1,
+            127,
+            128,
+            300,
+            16_383,
+            16_384,
+            2_097_151,
+            2_097_152,
+            u64::MAX,
         ] {
             let mut buf = Vec::new();
             write_uvarint(&mut buf, value);

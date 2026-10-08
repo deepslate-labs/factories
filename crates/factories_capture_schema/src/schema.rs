@@ -215,7 +215,8 @@ mod tests {
             if interpretation.is_none() {
                 self.events.push(format!("field({name})"));
             } else {
-                self.events.push(format!("field({name},{})", interpretation.name));
+                self.events
+                    .push(format!("field({name},{})", interpretation.name));
             }
         }
         fn end_struct(&mut self) {

@@ -217,8 +217,7 @@ pub type ErasedHookWork<'a, A> =
 /// carry it out of a `match_specialize!` arm (where the `OnStartHook` bound is
 /// discharged) and apply it where `cx` is concrete.
 #[doc(hidden)]
-pub type ErasedStartHook<A> =
-    for<'a> fn(&'a mut A, ActorContext<'a, A>) -> ErasedHookWork<'a, A>;
+pub type ErasedStartHook<A> = for<'a> fn(&'a mut A, ActorContext<'a, A>) -> ErasedHookWork<'a, A>;
 
 /// A stop hook, erased to a function pointer (see [`ErasedStartHook`]).
 #[doc(hidden)]
@@ -229,10 +228,7 @@ pub type ErasedStopHook<A> =
 /// to by the derive's [`Actor::on_start`](crate::actor::Actor::on_start).
 #[doc(hidden)]
 pub trait OnStartHook: Actor {
-    fn __erased_on_start<'a>(
-        &'a mut self,
-        cx: ActorContext<'a, Self>,
-    ) -> ErasedHookWork<'a, Self>;
+    fn __erased_on_start<'a>(&'a mut self, cx: ActorContext<'a, Self>) -> ErasedHookWork<'a, Self>;
 }
 
 /// Implemented by `#[messages]` for an actor with an `#[on_stop]` method; routed

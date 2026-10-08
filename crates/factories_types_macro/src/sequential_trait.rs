@@ -163,5 +163,5 @@ pub(super) fn proc_macro_sequential_trait(
             #(#valid_impls)*
         }
     }
-        .into()
+    .into()
 }

@@ -2,11 +2,11 @@
 //! individual members.
 
 use factories::actor::{Actor, StaticOnlyBinder};
-use factories::runtime::tokio::TokioMpscActorChannel;
 use factories::runtime::lock::UnguardedLock;
 use factories::runtime::registry::RegistryBinder;
 use factories::runtime::sequential_loop::SequentialRunLoop;
 use factories::runtime::template::ActorTemplate;
+use factories::runtime::tokio::TokioMpscActorChannel;
 use factories::runtime::tokio::TokioTaskSpawner;
 use factories::spawn::ActorLauncher;
 

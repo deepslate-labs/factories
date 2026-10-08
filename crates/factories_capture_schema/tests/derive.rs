@@ -4,7 +4,9 @@
 //! interpretation that folds sibling fields into one synthetic field.
 
 use factories_capture_schema::predicate::min_verbosity;
-use factories_capture_schema::{CaptureConfig, CaptureSchema, FieldVisitor, Interpretation, Scalar};
+use factories_capture_schema::{
+    CaptureConfig, CaptureSchema, FieldVisitor, Interpretation, Scalar,
+};
 
 #[derive(Default)]
 struct Recorder {
@@ -39,8 +41,11 @@ impl FieldVisitor for Recorder {
                 .iter()
                 .map(|(key, value)| format!("{key}={value:?}"))
                 .collect();
-            self.events
-                .push(format!("field({name},{},[{}])", interpretation.name, params.join(",")));
+            self.events.push(format!(
+                "field({name},{},[{}])",
+                interpretation.name,
+                params.join(",")
+            ));
         }
     }
     fn end_struct(&mut self) {

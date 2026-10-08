@@ -17,10 +17,10 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+use crate::actor::Actor;
 use crate::actor::lifecycle::TerminationKind;
 use crate::actor::state::SharedActorState;
 use crate::actor::supervision::ActorId;
-use crate::actor::Actor;
 use crate::message::envelope::EnvelopeType;
 
 /// Identity of a captured event: the actor that emitted it plus that actor's

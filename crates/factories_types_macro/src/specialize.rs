@@ -36,10 +36,7 @@ impl Parse for SpecializeInput {
         // `ident :` (single colon, not `::`) marks the inline value-carrying
         // form. A deferred `Type -> ...` never starts that way (a bare-ident
         // type like `String` is followed by `->`, a path type by `::`).
-        if input.peek(syn::Ident)
-            && input.peek2(syn::Token![:])
-            && !input.peek2(syn::Token![::])
-        {
+        if input.peek(syn::Ident) && input.peek2(syn::Token![:]) && !input.peek2(syn::Token![::]) {
             let binding = input.parse()?;
             let _: syn::Token![:] = input.parse()?;
             let scrutinee_ty = input.parse()?;
@@ -469,7 +466,9 @@ fn gen_inline_resolver(
     };
 
     let bound_clause = match resolved.selector {
-        SpecializePatSelector::Bounded { bounds, .. } if !bounds.is_empty() => quote::quote!(#bounds +),
+        SpecializePatSelector::Bounded { bounds, .. } if !bounds.is_empty() => {
+            quote::quote!(#bounds +)
+        }
         _ => quote::quote!(),
     };
 

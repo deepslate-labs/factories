@@ -115,6 +115,7 @@ pub mod prelude {
     #[cfg(feature = "derive")]
     pub use crate::{messages, protocol};
 
+    pub use crate::actor::extension::{Extension, ExtensionSet};
     pub use crate::actor::handle::{
         AnyActorHandle, AnyLocalActorHandle, TypedActorHandle, WeakActorHandle,
     };
@@ -123,7 +124,6 @@ pub mod prelude {
     };
     pub use crate::actor::supervision::{ActorId, Terminated, WatchDeliveryPolicy};
     pub use crate::actor::{Actor, ActorContext};
-    pub use crate::actor::extension::{Extension, ExtensionSet};
     pub use crate::declare_extension;
     pub use crate::message::Message;
     pub use crate::spawn::ActorLauncher;
@@ -150,9 +150,8 @@ pub use factories_actor::factories_collect;
 // root; re-export them here so `::factories::name!` resolves.
 #[doc(hidden)]
 pub use factories_actor::{
-    cfg_capture, cfg_dynamic_dispatch, cfg_tokio_answer, declare_actor_rtti,
-    declare_message, declare_message_rtti, declare_static_async_dispatcher,
-    implement_message_handler,
+    cfg_capture, cfg_dynamic_dispatch, cfg_tokio_answer, declare_actor_rtti, declare_message,
+    declare_message_rtti, declare_static_async_dispatcher, implement_message_handler,
 };
 
 #[cfg(feature = "dynamic-dispatch")]

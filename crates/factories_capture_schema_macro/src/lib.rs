@@ -54,7 +54,9 @@ impl Parse for CaptureArgs {
                 input.parse::<Token![=]>()?;
                 args.interpret = Some(input.parse()?);
             } else {
-                return Err(input.error("expected `skip`, `rename = \"…\"`, `if = …`, or `interpret = …`"));
+                return Err(
+                    input.error("expected `skip`, `rename = \"…\"`, `if = …`, or `interpret = …`")
+                );
             }
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
@@ -77,7 +79,10 @@ pub fn derive_capture_schema(input: TokenStream) -> TokenStream {
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(named) => &named.named,
-            _ => abort!(input.ident, "CaptureSchema requires a struct with named fields"),
+            _ => abort!(
+                input.ident,
+                "CaptureSchema requires a struct with named fields"
+            ),
         },
         _ => abort!(input.ident, "CaptureSchema can only be derived for structs"),
     };

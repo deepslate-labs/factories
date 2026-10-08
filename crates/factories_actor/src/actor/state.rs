@@ -1,15 +1,15 @@
 use crate::actor::Actor;
 use crate::actor::extension::ExtensionSet;
 use crate::actor::lifecycle::{CapturedPanic, TerminationKind, TerminationReason};
-use crate::actor::supervision::{Subscription, ActorId};
+use crate::actor::supervision::{ActorId, Subscription};
 use crate::actor::task::ActorTaskHandle;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt::{Debug, Formatter};
-use core::sync::atomic::{AtomicU8, Ordering};
 #[cfg(feature = "capture")]
 use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicU8, Ordering};
 use core::task::{Poll, Waker};
 use critical_section::Mutex;
 use once_cell::sync::OnceCell;
@@ -342,7 +342,10 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
     /// fires (the set was drained at termination).
     pub(crate) fn add_subscription(&self, subscription: Subscription) {
         critical_section::with(|cs| {
-            self.inner.subscriptions.borrow_ref_mut(cs).push(subscription);
+            self.inner
+                .subscriptions
+                .borrow_ref_mut(cs)
+                .push(subscription);
         });
     }
 
@@ -622,9 +625,7 @@ mod tests {
 
     impl futures::task::ArcWake for CountingWaker {
         fn wake_by_ref(arc_self: &Arc<Self>) {
-            arc_self
-                .0
-                .fetch_add(1, Ordering::SeqCst);
+            arc_self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 

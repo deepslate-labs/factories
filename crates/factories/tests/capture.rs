@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use factories::actor::channel::ActorChannelSendable;
 use factories::actor::{Actor, ActorContext};
-use factories::capture::{CaptureEvent, CaptureSink, CAPTURE_SINK};
+use factories::capture::{CAPTURE_SINK, CaptureEvent, CaptureSink};
 use factories::runtime::lock::UnguardedLock;
 use factories::runtime::sequential_loop::SequentialRunLoop;
 use factories::runtime::tokio::TokioTaskSpawner;
@@ -50,15 +50,23 @@ async fn births_and_deaths_are_captured() {
 
     let events = sink.0.lock().expect("sink mutex");
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, CaptureEvent::Spawned { actor_type: "Node", .. })),
+        events.iter().any(|e| matches!(
+            e,
+            CaptureEvent::Spawned {
+                actor_type: "Node",
+                ..
+            }
+        )),
         "expected a Spawned event, got {events:?}",
     );
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, CaptureEvent::Died { actor_type: "Node", .. })),
+        events.iter().any(|e| matches!(
+            e,
+            CaptureEvent::Died {
+                actor_type: "Node",
+                ..
+            }
+        )),
         "expected a Died event, got {events:?}",
     );
 }
@@ -107,7 +115,12 @@ async fn message_edges_and_causality_are_captured() {
         .expect("init");
     let upstream = ActorLauncher::default()
         .with_extension(CAPTURE_SINK, sink_dyn)
-        .spawn_ready(&spawner, Upstream { downstream: downstream.clone() })
+        .spawn_ready(
+            &spawner,
+            Upstream {
+                downstream: downstream.clone(),
+            },
+        )
         .await
         .expect("init");
 
@@ -123,7 +136,9 @@ async fn message_edges_and_causality_are_captured() {
     let relay_evt = events
         .iter()
         .find_map(|e| match e {
-            CaptureEvent::Message { id, from: None, to, .. } if *to == up_id => Some(*id),
+            CaptureEvent::Message {
+                id, from: None, to, ..
+            } if *to == up_id => Some(*id),
             _ => None,
         })
         .unwrap_or_else(|| panic!("external relay edge (from=None) not captured: {events:?}"));
@@ -237,9 +252,19 @@ async fn a_panicked_actor_emits_exactly_one_died() {
         .iter()
         .filter(|e| matches!(e, CaptureEvent::Died { .. }))
         .collect();
-    assert_eq!(deaths.len(), 1, "exactly one Died, no double-emit: {events:?}");
+    assert_eq!(
+        deaths.len(),
+        1,
+        "exactly one Died, no double-emit: {events:?}"
+    );
     assert!(
-        matches!(deaths[0], CaptureEvent::Died { reason: TerminationKind::Panicked, .. }),
+        matches!(
+            deaths[0],
+            CaptureEvent::Died {
+                reason: TerminationKind::Panicked,
+                ..
+            }
+        ),
         "a captured handler panic records Panicked: {:?}",
         deaths[0],
     );

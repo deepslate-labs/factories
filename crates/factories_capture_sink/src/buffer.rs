@@ -102,9 +102,14 @@ mod tests {
         buffer.open(anchor(100));
         assert!(!buffer.should_flush(100), "freshly opened is not full");
         for seq in 1..=4 {
-            buffer.encoder_mut().spawned(100, seq, nz(1), "A", None, None);
+            buffer
+                .encoder_mut()
+                .spawned(100, seq, nz(1), "A", None, None);
         }
-        assert!(buffer.should_flush(100), "records now exceed the size threshold");
+        assert!(
+            buffer.should_flush(100),
+            "records now exceed the size threshold"
+        );
     }
 
     #[test]
@@ -120,7 +125,9 @@ mod tests {
     fn take_resets_and_yields_a_decodable_segment() {
         let mut buffer = SegmentBuffer::new(16, u64::MAX);
         buffer.open(anchor(100));
-        buffer.encoder_mut().spawned(100, 1, nz(7), "Widget", None, None);
+        buffer
+            .encoder_mut()
+            .spawned(100, 1, nz(7), "Widget", None, None);
 
         let bytes = buffer.take(5, 200);
         assert!(!buffer.is_open(), "closed after take");

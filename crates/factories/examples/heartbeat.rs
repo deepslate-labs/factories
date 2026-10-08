@@ -9,10 +9,10 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use factories::actor::ActorContext;
 use factories::actor::dispatch::DispatchedActorMessage;
 use factories::actor::event::EventContext;
 use factories::actor::lifecycle::StopReason;
-use factories::actor::ActorContext;
 use factories::prelude::*;
 use factories::spawn::ActorMailbox;
 

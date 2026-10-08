@@ -1,7 +1,7 @@
 use crate::actor::work::WorkConverter;
-use crate::message::envelope::MessageEnvelope;
 #[cfg(feature = "tracing")]
 use crate::message::envelope::EnvelopeType;
+use crate::message::envelope::MessageEnvelope;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
@@ -430,9 +430,9 @@ impl DispatchedActorMessage {
         dispatch_context: &'ctx <A::RunLoop as crate::actor::ActorRunLoop<A>>::DispatchContext,
     ) -> <<A::RunLoop as crate::actor::ActorRunLoop<A>>::WorkConverter as WorkConverter>::Erased<'ctx>
     {
-        type Erased<'c, A> =
-            <<<A as crate::actor::Actor>::RunLoop as crate::actor::ActorRunLoop<A>>::WorkConverter
-                as WorkConverter>::Erased<'c>;
+        type Erased<'c, A> = <<<A as crate::actor::Actor>::RunLoop as crate::actor::ActorRunLoop<
+            A,
+        >>::WorkConverter as WorkConverter>::Erased<'c>;
 
         let (dispatcher, message_context) = self.into_parts();
 

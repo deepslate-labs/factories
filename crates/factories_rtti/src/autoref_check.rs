@@ -84,7 +84,10 @@ impl<T> AutorefSpecialized<T> {
     }
 }
 
-impl<T> Debug for AutorefSpecialized<T> where T: Debug {
+impl<T> Debug for AutorefSpecialized<T>
+where
+    T: Debug,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AutorefSpecialized")
             .field("resolver", &(self.resolve as *const ()))
@@ -93,7 +96,10 @@ impl<T> Debug for AutorefSpecialized<T> where T: Debug {
     }
 }
 
-impl<T> PartialEq for AutorefSpecialized<T> where T: PartialEq {
+impl<T> PartialEq for AutorefSpecialized<T>
+where
+    T: PartialEq,
+{
     fn eq(&self, other: &Self) -> bool {
         self.resolve() == other.resolve()
     }

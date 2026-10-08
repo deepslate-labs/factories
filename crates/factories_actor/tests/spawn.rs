@@ -902,7 +902,9 @@ async fn blocking_send_inside_runtime_waits_for_room() {
     tokio::time::sleep(core::time::Duration::from_millis(50)).await;
     release.send(()).expect("release the stalled handler");
 
-    let result = blocked.await.expect("blocking sender neither panics nor is cancelled");
+    let result = blocked
+        .await
+        .expect("blocking sender neither panics nor is cancelled");
     result.expect("blocking send completes once the mailbox drains");
 }
 
@@ -1804,7 +1806,11 @@ mod concurrent_panic {
         // queue up behind it in the work set / mailbox.
         handle.tell(Park(parked)).send().await.expect("tell park");
         handle.tell(BoomConc).send().await.expect("tell boom");
-        handle.tell(Probe(probe_tx)).send().await.expect("tell probe");
+        handle
+            .tell(Probe(probe_tx))
+            .send()
+            .await
+            .expect("tell probe");
 
         // Release the parked handler: BoomConc acquires next and panics.
         release.send(()).expect("parked handler holds the receiver");

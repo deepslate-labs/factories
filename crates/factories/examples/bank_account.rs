@@ -97,7 +97,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // balance is exactly what it was before the failed withdrawal.
     let still_there = account.balance().await?;
     println!("balance after the refused withdrawal -> {still_there}");
-    assert_eq!(still_there, 60, "the failed withdraw must not have moved money");
+    assert_eq!(
+        still_there, 60,
+        "the failed withdraw must not have moved money"
+    );
 
     Ok(())
 }
