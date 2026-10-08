@@ -44,5 +44,6 @@ factories_capture_sink = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = { workspace = true, features = ["std", "async-await"] }
 # Tests/doctests run on std targets; provide the critical-section implementation
-# the no_std `once_cell` configuration expects the final binary to supply.
+# `factories_sync`'s default backend expects the final binary to supply (test
+# runs without the `std` feature use that backend).
 critical-section = { version = "1", features = ["std"] }

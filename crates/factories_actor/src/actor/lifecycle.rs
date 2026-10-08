@@ -16,7 +16,6 @@ use crate::actor::{Actor, ActorContext, ActorRunLoop};
 use alloc::boxed::Box;
 use alloc::string::String;
 use core::any::Any;
-use core::cell::RefCell;
 use core::fmt::{Debug, Display, Formatter};
 
 /// A panic payload captured from an unwinding handler, hook or event driver,
@@ -35,7 +34,7 @@ pub struct CapturedPanic {
 
     /// The original unwind payload, take-once. The lock turns the `Send`-only
     /// box `Sync`; it is held only for the pointer-sized move in `take_raw`.
-    payload: critical_section::Mutex<RefCell<Option<Box<dyn Any + Send>>>>,
+    payload: factories_sync::Mutex<Option<Box<dyn Any + Send>>>,
 }
 
 impl CapturedPanic {
@@ -51,7 +50,7 @@ impl CapturedPanic {
 
         Self {
             message,
-            payload: critical_section::Mutex::new(RefCell::new(Some(payload))),
+            payload: factories_sync::Mutex::new(Some(payload)),
         }
     }
 
@@ -66,7 +65,7 @@ impl CapturedPanic {
     /// produced, uniformly for every payload type. `None` after the first
     /// call.
     pub fn take_raw(&self) -> Option<Box<dyn Any + Send>> {
-        critical_section::with(|cs| self.payload.borrow_ref_mut(cs).take())
+        self.payload.with_lock(Option::take)
     }
 }
 

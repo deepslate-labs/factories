@@ -11,6 +11,7 @@ members = [
     "crates/factories_collect",
     "crates/factories_extension",
     "crates/factories_rtti",
+    "crates/factories_sync",
     "crates/factories_types_macro"
 ]
 resolver = "3"
@@ -22,7 +23,6 @@ pin-project = "1.1.11"
 futures = { version = "0.3.32", default-features = false }
 
 # Utilities (mostly for non-std replacements)
-once_cell = { version = "1.21.4", default-features = false }
 critical-section = { version = "1.2.0", default-features = false }
 
 # Observability
@@ -53,4 +53,5 @@ factories_collect = { path = "crates/factories_collect" }
 factories_extension = { path = "crates/factories_extension" }
 factories_mem = { path = "crates/factories_mem" }
 factories_rtti = { path = "crates/factories_rtti" }
+factories_sync = { path = "crates/factories_sync" }
 factories_types_macro = { path = "crates/factories_types_macro" }

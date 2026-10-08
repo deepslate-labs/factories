@@ -5,14 +5,12 @@ use crate::actor::supervision::{ActorId, Subscription};
 use crate::actor::task::ActorTaskHandle;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::fmt::{Debug, Formatter};
 #[cfg(feature = "capture")]
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::task::{Poll, Waker};
-use critical_section::Mutex;
-use once_cell::sync::OnceCell;
+use factories_sync::{Mutex, OnceCell};
 
 /// A set of wakers awaiting a lifecycle transition.
 ///
@@ -22,7 +20,7 @@ use once_cell::sync::OnceCell;
 /// [`Waker::will_wake`] an already-registered one is dropped), so a future
 /// re-registering on each poll does not grow the set without bound.
 struct WakerSet {
-    wakers: Mutex<RefCell<Vec<Waker>>>,
+    wakers: Mutex<Vec<Waker>>,
 }
 
 impl Default for WakerSet {
@@ -34,15 +32,14 @@ impl Default for WakerSet {
 impl WakerSet {
     const fn new() -> Self {
         Self {
-            wakers: Mutex::new(RefCell::new(Vec::new())),
+            wakers: Mutex::new(Vec::new()),
         }
     }
 
     /// Register `waker` to be woken on the next transition, unless an
     /// equivalent waker is already registered.
     fn register(&self, waker: &Waker) {
-        critical_section::with(|cs| {
-            let mut wakers = self.wakers.borrow_ref_mut(cs);
+        self.wakers.with_lock(|wakers| {
             if wakers.iter().any(|existing| existing.will_wake(waker)) {
                 return;
             }
@@ -53,8 +50,7 @@ impl WakerSet {
     /// Wake and clear every registered waker. Still-pending futures
     /// re-register on their next poll.
     fn wake_all(&self) {
-        let wakers =
-            critical_section::with(|cs| core::mem::take(&mut *self.wakers.borrow_ref_mut(cs)));
+        let wakers = self.wakers.with_lock(core::mem::take);
         for waker in wakers {
             waker.wake();
         }
@@ -63,7 +59,7 @@ impl WakerSet {
 
 impl Debug for WakerSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let len = critical_section::with(|cs| self.wakers.borrow_ref(cs).len());
+        let len = self.wakers.with_lock(|wakers| wakers.len());
         f.debug_struct("WakerSet").field("waiters", &len).finish()
     }
 }
@@ -205,7 +201,7 @@ struct InnerSharedActorState<A: Actor + ?Sized> {
     // to its watcher, so this never keeps a watcher alive; non-generic
     // (`Subscription` is erased), so it never couples this state to
     // `A::Channel: Send`. Drained and delivered on the terminal transition.
-    subscriptions: Mutex<RefCell<Vec<Subscription>>>,
+    subscriptions: Mutex<Vec<Subscription>>,
 
     // Late-bound: the run loop future captures the shared state *before* the
     // spawner produces the task handle, so the handle is attached post-spawn.
@@ -234,7 +230,7 @@ impl<A: Actor + ?Sized> InnerSharedActorState<A> {
             id: ActorId::new(),
             reason: OnceCell::new(),
             lifecycle: LifecycleCell::new(),
-            subscriptions: Mutex::new(RefCell::new(Vec::new())),
+            subscriptions: Mutex::new(Vec::new()),
             task: OnceCell::new(),
             shared_data: A::SharedData::default(),
             extensions,
@@ -341,21 +337,15 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
     /// transition. Registering after the actor is already dead simply never
     /// fires (the set was drained at termination).
     pub(crate) fn add_subscription(&self, subscription: Subscription) {
-        critical_section::with(|cs| {
-            self.inner
-                .subscriptions
-                .borrow_ref_mut(cs)
-                .push(subscription);
+        self.inner.subscriptions.with_lock(|subscriptions| {
+            subscriptions.push(subscription);
         });
     }
 
     /// Remove every subscription registered by the given watcher (its `unwatch`).
     pub(crate) fn remove_subscriptions(&self, watcher: ActorId) {
-        critical_section::with(|cs| {
-            self.inner
-                .subscriptions
-                .borrow_ref_mut(cs)
-                .retain(|subscription| subscription.watcher_id() != watcher);
+        self.inner.subscriptions.with_lock(|subscriptions| {
+            subscriptions.retain(|subscription| subscription.watcher_id() != watcher);
         });
     }
 
@@ -363,9 +353,7 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
     /// kind to deliver. `None` if no reason is recorded yet.
     fn take_subscriptions(&self) -> Option<(TerminationKind, Vec<Subscription>)> {
         let kind = self.inner.reason.get().map(TerminationReason::kind)?;
-        let subscriptions = critical_section::with(|cs| {
-            core::mem::take(&mut *self.inner.subscriptions.borrow_ref_mut(cs))
-        });
+        let subscriptions = self.inner.subscriptions.with_lock(core::mem::take);
         Some((kind, subscriptions))
     }
 

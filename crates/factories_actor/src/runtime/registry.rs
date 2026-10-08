@@ -34,7 +34,7 @@ use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
 use core::num::NonZeroUsize;
 use factories_collect::GlobalCollection;
-use once_cell::sync::OnceCell;
+use factories_sync::OnceCell;
 
 /// All dynamic handler registrations collected at binary load.
 ///

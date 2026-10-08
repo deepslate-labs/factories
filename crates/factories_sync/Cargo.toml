@@ -1,0 +1,26 @@
+[package]
+name = "factories_sync"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# The no_std-friendly default: every build has a working backend without
+# choosing one. `std` (below) takes precedence when also enabled, so std
+# consumers transparently get per-object OS locks.
+default = ["critical-section"]
+
+# Backend: per-object `std::sync::Mutex` locking. Wins over `critical-section`
+# when both are enabled - features are additive and if std exists anywhere in
+# the binary, std locking works for everyone.
+std = []
+# Backend: `critical_section::with` based locking (one global section). The
+# final binary must provide a critical-section implementation.
+critical-section = ["dep:critical-section"]
+
+[dependencies]
+critical-section = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Tests run on std hosts; provide the critical-section implementation the
+# `critical-section` backend expects the final binary to supply.
+critical-section = { version = "1", features = ["std"] }
