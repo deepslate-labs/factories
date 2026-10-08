@@ -42,7 +42,9 @@ impl Calc {
 /// `#[messages]` from the handler names).
 #[protocol]
 trait Counting {
+    /// Adds `msg.amount` to the running total.
     fn add(&self, msg: Add);
+    /// Reads the running total.
     fn total(&self, msg: Total);
 }
 
@@ -63,6 +65,22 @@ trait Reader {
 trait LocalCounting {
     fn add(&self, msg: Add);
     fn total(&self, msg: Total);
+}
+
+/// Gated *after* the attribute, so the macro - not rustc - sees the `cfg` and
+/// must forward it to the handle and the impls. `Absent` expands to nothing at
+/// all: this file compiles only because no `AbsentHandle` is left behind
+/// referring to a trait that isn't there. `Gated` is the positive twin.
+#[protocol]
+#[cfg(any())]
+trait Absent {
+    fn add(&self, msg: Add);
+}
+
+#[protocol]
+#[cfg(all())]
+trait Gated {
+    fn add(&self, msg: Add);
 }
 
 // -- Helpers --------------------------------------------------------------------
@@ -130,6 +148,12 @@ async fn generic_bound_combining_is_free() {
 
     let calc = spawn_calc(40).await;
     assert_eq!(drive(calc).await, 43);
+}
+
+#[tokio::test]
+async fn cfg_after_the_attribute_gates_the_whole_expansion() {
+    let gated: GatedHandle = spawn_calc(1).await.into();
+    gated.add(Add { amount: 2 }).tell().await.expect("tell");
 }
 
 #[tokio::test]

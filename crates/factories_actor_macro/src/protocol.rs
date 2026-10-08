@@ -7,7 +7,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::Parser;
 use syn::spanned::Spanned;
-use syn::{FnArg, Ident, ItemTrait, Pat, ReturnType, TraitItem, Type};
+use syn::{Attribute, FnArg, Ident, ItemTrait, Pat, ReturnType, TraitItem, Type};
 
 use crate::util;
 
@@ -20,20 +20,25 @@ enum Locality {
 }
 
 /// One protocol message: the method name that fronts it, the binding name to
-/// forward, the message type, and its index in the dispatcher table.
+/// forward, the message type, its index in the dispatcher table, and the
+/// attributes (docs, lints, ...) the user wrote on the method - re-emitted on
+/// the trait's declaration, where rustdoc and the lints pick them up.
 struct ProtocolMessage {
+    attrs: Vec<Attribute>,
     method: Ident,
     binding: Ident,
     message: Type,
     index: usize,
 }
 
+/// A `#[cfg(...)]` attribute. (`cfg_attr` is deliberately not one: it attaches
+/// arbitrary attributes, which rarely make sense on every generated item.)
+fn is_cfg(attr: &Attribute) -> bool {
+    attr.path().is_ident("cfg")
+}
+
 pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let (locality, krate) = parse_attrs(&attrs);
-
-    // Always emit the trait unchanged on a hard error, so downstream code that
-    // names the trait still resolves while diagnostics surface.
-    proc_macro_error::set_dummy(quote!(#input));
 
     if !input.generics.params.is_empty() {
         proc_macro_error::emit_error!(
@@ -47,6 +52,12 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     let trait_ident = &input.ident;
     let vis = &input.vis;
     let handle_ident = format_ident!("{}Handle", trait_ident);
+
+    // Everything the user wrote on the trait stays on the trait. A `#[cfg]` is
+    // additionally applied to the handle and every impl, so the expansion
+    // disappears as one unit when the trait does.
+    let trait_attrs = &input.attrs;
+    let cfg_attrs: Vec<&Attribute> = input.attrs.iter().filter(|attr| is_cfg(attr)).collect();
 
     // The effective supertraits: a shared protocol is `Send + Sync` (plus
     // whatever the user wrote), so both its impls must prove `Self: Send + Sync`.
@@ -87,8 +98,9 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     // its own inner: the typed impl reuses `TypedActorHandle::call` /
     // `call_local` (unboxed, zero-cost), the erased impl wraps an `ErasedCall`.
     let trait_methods = messages.iter().map(|m| {
+        let attrs = &m.attrs;
         let sig = method_signature(m, &handle, &message, locality);
-        quote!(#sig;)
+        quote!(#(#attrs)* #sig;)
     });
     let typed_methods = messages.iter().map(|m| {
         let sig = method_signature(m, &handle, &message, locality);
@@ -174,12 +186,14 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
     );
 
     quote! {
+        #(#trait_attrs)*
         #vis trait #trait_ident #supertrait_clause {
             #(#trait_methods)*
         }
 
         // Static, zero-cost surface: any typed handle whose actor handles every
         // protocol message. The `where Self: ...` discharges the supertraits.
+        #(#cfg_attrs)*
         impl<__A> #trait_ident for #handle::TypedActorHandle<__A>
         where
             __A: #actor::Actor #(+ #handler_bounds_typed)*,
@@ -189,6 +203,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             #(#typed_methods)*
         }
 
+        #(#cfg_attrs)*
         #[doc = #handle_doc]
         #[derive(::core::clone::Clone, ::core::fmt::Debug)]
         #vis struct #handle_ident {
@@ -196,6 +211,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             dispatchers: [#actor::dispatch::ActorMessageDispatcher; #table_len],
         }
 
+        #(#cfg_attrs)*
         impl<__H> ::core::convert::From<__H> for #handle_ident
         where
             __H: #handle::DerivedHandle,
@@ -211,6 +227,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             }
         }
 
+        #(#cfg_attrs)*
         impl #handle_ident {
             /// Bind this protocol against an erased handle, verifying every
             /// protocol message resolves on the actor behind it. Returns the
@@ -229,6 +246,7 @@ pub fn protocol(attrs: TokenStream, input: ItemTrait) -> TokenStream {
             }
         }
 
+        #(#cfg_attrs)*
         impl #trait_ident for #handle_ident {
             #(#handle_methods)*
         }
@@ -336,7 +354,28 @@ fn collect_messages(input: &ItemTrait) -> Vec<ProtocolMessage> {
             }
         };
 
+        // The dispatcher table is sized here, so a message cannot come and go
+        // with a `cfg`
+        let attrs = function
+            .attrs
+            .iter()
+            .filter(|attr| {
+                if is_cfg(attr) {
+                    proc_macro_error::emit_error!(
+                        attr.span(),
+                        "#[protocol] methods cannot be `cfg`-gated individually (the handle's \
+                         dispatcher table is sized at expansion); gate the whole trait instead"
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
         messages.push(ProtocolMessage {
+            attrs,
             method: sig.ident.clone(),
             binding,
             message: (*param.ty).clone(),

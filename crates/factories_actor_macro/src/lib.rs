@@ -221,9 +221,9 @@ pub fn protocol(
     attrs: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    protocol::protocol(
-        attrs.into(),
-        syn::parse_macro_input!(input as syn::ItemTrait),
-    )
-    .into()
+    let input = syn::parse_macro_input!(input as syn::ItemTrait);
+    // Always emit the trait unchanged on a hard error, so downstream code that
+    // names the trait still resolves while diagnostics surface.
+    proc_macro_error::set_dummy(quote::quote!(#input));
+    protocol::protocol(attrs.into(), input).into()
 }
