@@ -3,10 +3,11 @@
 So far our actors have simply appeared, served some messages, and vanished when
 we dropped the last handle. That's the happy path, and most of the time it's all
 you need. But an actor has a *life*: it is born when you spawn it, it runs while
-anyone holds a handle to it, and it dies when the last handle is gone - or when
-something goes wrong. This chapter is about the two ends of that arc. We'll look
-at the **hooks** that run at birth and death, and then at the **spawn** calls
-that bring an actor into being and let you wait for it to be ready.
+anyone holds a handle to it, and it dies when the last handle is gone, when it
+decides it is done, or when something goes wrong. This chapter is about the two
+ends of that arc. We'll look at the **hooks** that run at birth and death, at how
+an actor **stops itself**, and then at the **spawn** calls that bring an actor
+into being and let you wait for it to be ready.
 
 We'll use the heartbeat actor as our running illustration. You can follow along
 by running it:
@@ -110,8 +111,9 @@ pub enum StopReason<'a, A: Actor + ?Sized> {
 }
 ```
 
-`Finished` means a graceful end: every handle was dropped, the mailbox closed,
-and the loop wound down on its own. `Failed(e)` means a handler (or `on_start`
+`Finished` means a graceful end: every handle was dropped and the mailbox
+closed, or the actor asked to stop (next section) - either way the loop wound
+down without failing. `Failed(e)` means a handler (or `on_start`
 itself) called `cx.fail(..)` and the actor is dying because of it - and the hook
 gets a reference to the error that killed it, so it can react. The same
 shutdown code runs either way; the reason just tells it *why*.
@@ -153,6 +155,39 @@ Errors](04-state-answers-errors.md)) - it just means "treat an `Err` from this
 method as a reason to fail the actor." When startup is aborted this way, a caller
 waiting on `spawn_ready` gets the error back, which is exactly what the next
 section is about.
+
+## Stopping yourself
+
+Dropping the last handle is how the *outside* ends an actor. Sometimes the actor
+knows better - a session whose call hung up, a worker that finished its batch.
+For that, a handler (or `on_start`) calls `cx.stop()`:
+
+```rust
+#[handler]
+async fn hang_up(&mut self, #[context] cx: ActorContext<'_, Self>) {
+    cx.stop();
+}
+```
+
+`stop` only records the request; the handler finishes normally. From then on
+`cx.lifecycle()` reads `Draining`, and on its next turn the event driver closes
+the mailbox: new sends fail with `ActorDead`, but everything that was already
+queued is still served - a stop is not a discard. Once that backlog has drained
+the loop exits and `on_stop` runs with `StopReason::Finished`, exactly as if the
+last handle had dropped. On the concurrent loop, handlers already in flight
+complete first. Watchers see `TerminationKind::Finished`.
+
+Compare `cx.fail(error)`: that is the emergency exit - it marks the state
+compromised, drops the queue and any in-flight work, and reports `Failed`.
+`stop` is the orderly one. Calling both is fine; the failure wins.
+
+Two details worth knowing. `stop` is idempotent, and it works from `on_start`
+too: an actor that decides at startup it has nothing to do drains before serving
+a single message, and `spawn_ready` still returns `Ok` - it started, it just
+chose to finish. And the request is honoured by the *event driver*, not the
+loop: the default driver and the derive's generated one do it for you, while an
+`#[event_source]` or hand-written driver gets it through `standard_mailbox_poll`
+- see [Event Sources](08-event-sources.md).
 
 ## Spawning
 

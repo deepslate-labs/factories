@@ -6,7 +6,7 @@ use crate::actor::channel::{
 use crate::actor::dispatch::DispatchedActorMessage;
 use crate::runtime::routing::{ActorMessagePriorityRouter, NoPriorityRouter};
 use crate::spawn::{ActorMailbox, CreatableChannel};
-use crate::util::future::select_biased;
+use core::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 pub type TokioMpscActorChannel = TokioMpscMultiLineActorChannel<1, NoPriorityRouter>;
@@ -289,10 +289,18 @@ pub enum TokioMpscReceiver {
 }
 
 impl TokioMpscReceiver {
-    async fn receive(&mut self) -> Option<DispatchedActorMessage> {
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<DispatchedActorMessage>> {
         match self {
-            Self::Bounded(receiver) => receiver.recv().await,
-            Self::Unbounded(receiver) => receiver.recv().await,
+            Self::Bounded(receiver) => receiver.poll_recv(cx),
+            Self::Unbounded(receiver) => receiver.poll_recv(cx),
+        }
+    }
+
+    /// Refuse further sends; buffered messages stay receivable.
+    fn close(&mut self) {
+        match self {
+            Self::Bounded(receiver) => receiver.close(),
+            Self::Unbounded(receiver) => receiver.close(),
         }
     }
 }
@@ -310,8 +318,32 @@ impl From<mpsc::UnboundedReceiver<DispatchedActorMessage>> for TokioMpscReceiver
 }
 
 impl<const SEND_LANES: usize> ActorMailbox for TokioMpscMultilaneActorMailbox<SEND_LANES> {
+    /// Lanes are polled in priority order (lane 0 first). A lane that is closed
+    /// and drained is exhausted, but the mailbox only resolves to `None` once
+    /// every lane is - a backlog on a lower lane survives a close.
     async fn receive(&mut self) -> Option<DispatchedActorMessage> {
-        select_biased(self.receiver.each_mut().map(|receiver| receiver.receive())).await
+        core::future::poll_fn(|cx| {
+            let mut exhausted = 0;
+            for receiver in &mut self.receiver {
+                match receiver.poll_recv(cx) {
+                    Poll::Ready(Some(message)) => return Poll::Ready(Some(message)),
+                    Poll::Ready(None) => exhausted += 1,
+                    Poll::Pending => {}
+                }
+            }
+            if exhausted == SEND_LANES {
+                Poll::Ready(None)
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    fn close(&mut self) {
+        for receiver in &mut self.receiver {
+            receiver.close();
+        }
     }
 }
 
@@ -406,6 +438,61 @@ mod tests {
             mailbox.receive().await.unwrap().envelope().rtti(),
             Control::RTTI
         );
+    }
+
+    #[tokio::test]
+    async fn close_refuses_new_sends_and_drains_the_backlog() {
+        let (channel, mut mailbox) = TokioMpscActorChannel::new_bounded(8);
+
+        channel.prepare_send(dispatched(Data)).send().await.unwrap();
+        channel
+            .prepare_send(dispatched(Control))
+            .send()
+            .await
+            .unwrap();
+
+        mailbox.close();
+
+        match channel.prepare_send(dispatched(Data)).send().await {
+            Err(ActorChannelSendError::ActorDead) => {}
+            other => panic!("expected ActorDead after close, got {other:?}"),
+        }
+
+        // The backlog enqueued before the close is still handed out, in order.
+        assert_eq!(
+            mailbox.receive().await.unwrap().envelope().rtti(),
+            Data::RTTI
+        );
+        assert_eq!(
+            mailbox.receive().await.unwrap().envelope().rtti(),
+            Control::RTTI
+        );
+        assert!(mailbox.receive().await.is_none(), "closed and drained");
+    }
+
+    #[tokio::test]
+    async fn close_closes_every_lane() {
+        let (channel, mut mailbox) =
+            TokioMpscMultiLineActorChannel::<2, _>::new_all_bounded(8, ControlFirstRouter);
+
+        // Lane 1 holds a backlog; lane 0 is empty.
+        channel.prepare_send(dispatched(Data)).send().await.unwrap();
+        mailbox.close();
+
+        for message in [dispatched(Control), dispatched(Data)] {
+            match channel.prepare_send(message).send().await {
+                Err(ActorChannelSendError::ActorDead) => {}
+                other => panic!("expected ActorDead on every lane, got {other:?}"),
+            }
+        }
+
+        // An empty, closed lane must not end the mailbox while another lane
+        // still has a backlog.
+        assert_eq!(
+            mailbox.receive().await.unwrap().envelope().rtti(),
+            Data::RTTI
+        );
+        assert!(mailbox.receive().await.is_none());
     }
 
     #[tokio::test]

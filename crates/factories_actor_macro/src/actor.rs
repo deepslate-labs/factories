@@ -357,7 +357,8 @@ fn generated_event_loop(ident: &Ident, loop_ident: &Ident, krate: &TokenStream) 
                     ) -> impl #future + #send + '__a;
                 }
 
-                // Fallback (impl for bare `__Probe`): pull from the mailbox.
+                // Fallback (impl for bare `__Probe`): pull from the mailbox,
+                // honouring stop requests.
                 // Concrete in `#ident` so `receive()`'s `Send` future discharges
                 // the demand bound against the *concrete* demand.
                 trait __ViaMailbox {
@@ -395,10 +396,10 @@ fn generated_event_loop(ident: &Ident, loop_ident: &Ident, krate: &TokenStream) 
                 impl __ViaMailbox for __Probe<#ident> {
                     fn __select<'__a, __MB: #mailbox + ::core::marker::Send>(
                         self,
-                        _cx: #event_context<'__a, #ident>,
+                        cx: #event_context<'__a, #ident>,
                         mailbox: &'__a mut __MB,
                     ) -> impl #future + #send + '__a {
-                        mailbox.receive()
+                        #krate::actor::event::standard_mailbox_poll(&cx, mailbox)
                     }
                 }
 

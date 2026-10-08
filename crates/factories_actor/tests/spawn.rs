@@ -2,7 +2,9 @@
 
 use factories_actor::actor::channel::{ActorChannelSendError, ActorChannelSendable};
 use factories_actor::actor::dispatch::{DispatchedActorMessage, StaticDispatcher};
-use factories_actor::actor::event::{DefaultMailboxDriver, EventContext, EventDriver};
+use factories_actor::actor::event::{
+    DefaultMailboxDriver, EventContext, EventDriver, standard_mailbox_poll,
+};
 use factories_actor::actor::extension::ExtensionSet;
 use factories_actor::actor::handle::{
     AskError, Calling, MessageCall, TypedActorHandle, WeakActorHandle,
@@ -20,6 +22,7 @@ use factories_actor::runtime::concurrent_loop::ConcurrentRunLoop;
 use factories_actor::runtime::lock::{self, UnguardedLock};
 use factories_actor::runtime::sequential_loop::SequentialRunLoop;
 use factories_actor::runtime::tokio::TokioMpscActorChannel;
+use factories_actor::runtime::tokio::TokioRwLock;
 use factories_actor::runtime::tokio::TokioTaskSpawner;
 use factories_actor::spawn::{
     ActorLauncher, ActorMailbox, ActorTaskSpawner, CreatableChannel, SpawnableRunLoop,
@@ -1871,4 +1874,482 @@ async fn lifecycle_hooks_run_in_order() {
         ),
         "a clean drain records the Finished termination reason"
     );
+}
+
+// A handler (or the start hook) asks the actor to finish. The request is the
+// `Draining` lifecycle state; the driver sees it through
+// `EventContext::should_stop`, closes the mailbox, and the loop serves what
+// was already queued before `on_stop` runs with `Finished`. None of this needs a
+// custom driver: `DefaultMailboxDriver` honours the request.
+
+/// Log plus a gate a handler can park on, so a test can queue messages behind
+/// a running handler deterministically.
+#[derive(Default)]
+struct GatedLog {
+    log: LifecycleLog,
+    gate: tokio::sync::Notify,
+}
+
+struct Finisher;
+
+declare_actor_rtti!(FINISHER_RTTI, Finisher);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Finisher {
+    const RTTI: &'static ActorRtti = FINISHER_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Finisher>;
+    type RunLoop = SequentialRunLoop<Finisher>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = GatedLog;
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().log.clone();
+        let tag = match reason {
+            StopReason::Finished => "stop:finished",
+            StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
+        };
+        async move { log.record(tag) }
+    }
+}
+
+/// Parks until the test opens the gate; everything sent meanwhile queues up.
+#[derive(Debug)]
+struct Gate;
+declare_message!(Gate, ());
+
+impl MessageHandler<Gate> for Finisher {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Finisher, Gate> =
+        declare_static_async_dispatcher!(Finisher, Gate, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, _answer) = ctx.into_parts();
+            actor_cx.shared_data().gate.notified().await;
+            actor_cx.shared_data().log.record("gate");
+        });
+}
+
+/// Asks the actor to finish.
+#[derive(Debug)]
+struct Finish;
+declare_message!(Finish, ());
+
+impl MessageHandler<Finish> for Finisher {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Finisher, Finish> =
+        declare_static_async_dispatcher!(Finisher, Finish, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            actor_cx.stop();
+            actor_cx.shared_data().log.record("finish");
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        });
+}
+
+/// Records the lifecycle state it ran under.
+#[derive(Debug)]
+struct Work;
+declare_message!(Work, ());
+
+impl MessageHandler<Work> for Finisher {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Finisher, Work> =
+        declare_static_async_dispatcher!(Finisher, Work, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            actor_cx
+                .shared_data()
+                .log
+                .record(match actor_cx.lifecycle() {
+                    LifecycleState::Draining => "work:draining",
+                    _ => "work:running",
+                });
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        });
+}
+
+#[tokio::test]
+async fn stop_request_serves_the_backlog_then_finishes() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Finisher)
+        .await
+        .expect("finisher init is infallible");
+    let shared = handle.state().clone();
+
+    // Park the loop in `Gate`, then queue the stop request with work behind it.
+    handle.tell(Gate).send().await.expect("tell");
+    handle.tell(Finish).send().await.expect("tell");
+    handle.tell(Work).send().await.expect("tell");
+    handle.tell(Work).send().await.expect("tell");
+    shared.shared_data().gate.notify_one();
+
+    shared.wait_for_terminal().await;
+
+    assert_eq!(
+        shared.shared_data().log.snapshot(),
+        [
+            "gate",
+            "finish",
+            "work:draining",
+            "work:draining",
+            "stop:finished"
+        ],
+        "the backlog queued before the stop is still served, under Draining, before on_stop"
+    );
+    assert!(
+        matches!(
+            shared.termination_reason(),
+            Some(TerminationReason::Finished)
+        ),
+        "a requested stop is a clean finish"
+    );
+
+    // The handle outlives the actor; sends now report the closed mailbox.
+    let late = handle.tell(Work).send().await;
+    assert!(
+        matches!(late, Err(ActorChannelSendError::ActorDead)),
+        "a send after the stop must report ActorDead, got {late:?}"
+    );
+}
+
+#[tokio::test]
+async fn watcher_sees_finished_after_a_requested_stop() {
+    let spawner = TokioTaskSpawner::current();
+
+    let watcher = ActorLauncher::default()
+        .spawn_ready(&spawner, Supervisor)
+        .await
+        .expect("supervisor init is infallible");
+    let watched = ActorLauncher::default()
+        .spawn_ready(&spawner, Finisher)
+        .await
+        .expect("finisher init is infallible");
+
+    watcher.watch(&watched, 7);
+    watched.ask(Finish).exchange().await.expect("ask");
+    watched.state().wait_for_terminal().await;
+
+    let deaths = watcher.ask(GetDeaths).exchange().await.expect("ask");
+    assert_eq!(deaths, vec![(7, TerminationKind::Finished)]);
+}
+
+// Decides in `on_start` that there is nothing to do: the request lands before
+// `Running`, so the loop drains straight away - and `spawn_ready` still reports
+// a live, successfully started actor rather than a failure.
+struct EarlyOut;
+
+declare_actor_rtti!(EARLY_OUT_RTTI, EarlyOut);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for EarlyOut {
+    const RTTI: &'static ActorRtti = EARLY_OUT_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<EarlyOut>;
+    type RunLoop = SequentialRunLoop<EarlyOut>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = LifecycleLog;
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_start<'a>(
+        &'a mut self,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().clone();
+        cx.stop();
+        async move { log.record("start") }
+    }
+
+    fn on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().clone();
+        let tag = match reason {
+            StopReason::Finished => "stop:finished",
+            StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
+        };
+        async move { log.record(tag) }
+    }
+}
+
+#[tokio::test]
+async fn stop_from_on_start_finishes_without_failing() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, EarlyOut)
+        .await
+        .expect("a stop requested at startup is not a failure");
+
+    // The handle stays alive: the stop request alone ends the actor.
+    handle.state().wait_for_terminal().await;
+
+    assert_eq!(
+        handle.state().shared_data().snapshot(),
+        ["start", "stop:finished"]
+    );
+    assert!(matches!(
+        handle.state().termination_reason(),
+        Some(TerminationReason::Finished)
+    ));
+}
+
+// Concurrent loop + shared access: a handler parked under a shared guard must
+// still complete after another handler requested the stop - the drain treats
+// in-flight work exactly like a handle-drop drain does.
+struct Parallel;
+
+declare_actor_rtti!(PARALLEL_RTTI, Parallel);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Parallel {
+    const RTTI: &'static ActorRtti = PARALLEL_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = TokioRwLock<Parallel>;
+    type RunLoop = ConcurrentRunLoop<Parallel>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = GatedLog;
+    type EventDriver = DefaultMailboxDriver;
+
+    fn on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().log.clone();
+        let tag = match reason {
+            StopReason::Finished => "stop:finished",
+            StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
+        };
+        async move { log.record(tag) }
+    }
+}
+
+#[derive(Debug)]
+struct Slow;
+declare_message!(Slow, ());
+
+impl MessageHandler<Slow> for Parallel {
+    type AccessMode = lock::Shared;
+
+    const DISPATCHER: StaticDispatcher<Parallel, Slow> =
+        declare_static_async_dispatcher!(Parallel, Slow, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, _answer) = ctx.into_parts();
+            actor_cx.shared_data().gate.notified().await;
+            actor_cx.shared_data().log.record("slow");
+        });
+}
+
+#[derive(Debug)]
+struct FinishParallel;
+declare_message!(FinishParallel, ());
+
+impl MessageHandler<FinishParallel> for Parallel {
+    type AccessMode = lock::Shared;
+
+    const DISPATCHER: StaticDispatcher<Parallel, FinishParallel> =
+        declare_static_async_dispatcher!(Parallel, FinishParallel, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            actor_cx.stop();
+            actor_cx.shared_data().log.record("finish");
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        });
+}
+
+#[tokio::test]
+async fn concurrent_loop_completes_in_flight_work_after_a_stop_request() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Parallel)
+        .await
+        .expect("parallel init is infallible");
+    let shared = handle.state().clone();
+
+    // `Slow` parks on the gate under a shared guard; the stop request runs
+    // beside it.
+    handle.tell(Slow).send().await.expect("tell");
+    handle.ask(FinishParallel).exchange().await.expect("ask");
+    assert_eq!(
+        shared.shared_data().log.snapshot(),
+        ["finish"],
+        "the stop request ran while Slow was still parked"
+    );
+
+    shared.shared_data().gate.notify_one();
+    shared.wait_for_terminal().await;
+
+    assert_eq!(
+        shared.shared_data().log.snapshot(),
+        ["finish", "slow", "stop:finished"],
+        "in-flight work completes before on_stop; nothing is dropped"
+    );
+    assert!(matches!(
+        shared.termination_reason(),
+        Some(TerminationReason::Finished)
+    ));
+}
+
+// A driver with its own perpetual source: a timer that never stops firing. Its
+// mailbox arm goes through `standard_mailbox_poll`, which is what lets the
+// actor stop at all - once a handler requested it, the poll closes the mailbox
+// and the drained `None` ends the loop before the timer gets another turn.
+struct Pulsar;
+
+declare_actor_rtti!(PULSAR_RTTI, Pulsar);
+
+// SAFETY: The RTTI is declared for exactly this type.
+unsafe impl Actor for Pulsar {
+    const RTTI: &'static ActorRtti = PULSAR_RTTI;
+
+    type Channel = TokioMpscActorChannel;
+    type Error = core::convert::Infallible;
+    type RuntimeBinder = StaticOnlyBinder;
+    type LockStrategy = UnguardedLock<Pulsar>;
+    type RunLoop = SequentialRunLoop<Pulsar>;
+    type TypedHandle = TypedActorHandle<Self>;
+    type SharedData = LifecycleLog;
+    type EventDriver = PulseSource;
+
+    fn on_stop<'a>(
+        self,
+        reason: StopReason<'a, Self>,
+        cx: ActorContext<'a, Self>,
+    ) -> impl IntoRunLoopWork<<Self::RunLoop as ActorRunLoop<Self>>::WorkConverter> + 'a {
+        let log = cx.shared_data().clone();
+        let tag = match reason {
+            StopReason::Finished => "stop:finished",
+            StopReason::Failed(_) => "stop:failed",
+            StopReason::Panicked(_) => "stop:panicked",
+        };
+        async move { log.record(tag) }
+    }
+}
+
+#[derive(Debug)]
+struct Pulse;
+declare_message!(Pulse, ());
+
+impl MessageHandler<Pulse> for Pulsar {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Pulsar, Pulse> =
+        declare_static_async_dispatcher!(Pulsar, Pulse, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, _answer) = ctx.into_parts();
+            actor_cx.shared_data().record("pulse");
+        });
+}
+
+#[derive(Debug)]
+struct FinishPulsar;
+declare_message!(FinishPulsar, ());
+
+impl MessageHandler<FinishPulsar> for Pulsar {
+    type AccessMode = lock::Exclusive;
+
+    const DISPATCHER: StaticDispatcher<Pulsar, FinishPulsar> =
+        declare_static_async_dispatcher!(Pulsar, FinishPulsar, |ctx| async move {
+            let actor_cx = ctx.actor_context();
+            let (_guard, _message, answer) = ctx.into_parts();
+            actor_cx.stop();
+            actor_cx.shared_data().record("finish");
+            if let Some(answer) = answer {
+                let _ = answer.send(());
+            }
+        });
+}
+
+struct PulseSource;
+
+impl From<&Pulsar> for PulseSource {
+    fn from(_actor: &Pulsar) -> Self {
+        PulseSource
+    }
+}
+
+impl<M: ActorMailbox + Send> EventDriver<Pulsar, M> for PulseSource {
+    fn next<'a>(
+        &'a mut self,
+        cx: EventContext<'a, Pulsar>,
+        mailbox: &'a mut M,
+    ) -> impl Future<Output = Option<DispatchedActorMessage>> + 'a {
+        async move {
+            tokio::select! {
+                _ = tokio::time::sleep(core::time::Duration::from_millis(1)) => {
+                    Some(cx.message(Pulse))
+                }
+                message = standard_mailbox_poll(&cx, mailbox) => message,
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn custom_driver_stops_through_standard_mailbox_poll() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Pulsar)
+        .await
+        .expect("pulsar init is infallible");
+    let shared = handle.state().clone();
+
+    // Let the timer source prove it is alive first.
+    tokio::time::timeout(core::time::Duration::from_secs(5), async {
+        while !shared.shared_data().snapshot().contains(&"pulse") {
+            tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the timer source fires");
+
+    handle.ask(FinishPulsar).exchange().await.expect("ask");
+    shared.wait_for_terminal().await;
+
+    let log = shared.shared_data().snapshot();
+    let finish = log
+        .iter()
+        .position(|event| *event == "finish")
+        .expect("finish recorded");
+    assert_eq!(
+        &log[finish..],
+        ["finish", "stop:finished"],
+        "nothing is dispatched after the stop request - the timer never gets another turn: {log:?}"
+    );
+    assert!(matches!(
+        shared.termination_reason(),
+        Some(TerminationReason::Finished)
+    ));
 }

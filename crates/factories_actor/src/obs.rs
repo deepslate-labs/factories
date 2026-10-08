@@ -20,6 +20,7 @@ use crate::actor::channel::ActorChannelSendError;
 #[cfg(feature = "tracing")]
 use crate::actor::lifecycle::CapturedPanic;
 use crate::actor::lifecycle::TerminationKind;
+use crate::actor::state::LifecycleState;
 use crate::actor::supervision::ActorId;
 use core::future::Future;
 
@@ -112,6 +113,22 @@ pub(crate) fn actor_started(actor: &'static str, id: ActorId) {
 /// No-op without the `tracing` feature.
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn actor_started(_: &'static str, _: ActorId) {}
+
+/// Emit the "stop requested" event as a handler or hook asks the actor to
+/// finish (the `Draining` transition).
+#[cfg(feature = "tracing")]
+pub(crate) fn stop_requested(actor: &'static str, id: ActorId, current_state: LifecycleState) {
+    tracing::debug!(
+        actor.name = actor,
+        actor.id = id.as_usize() as u64,
+        actor.state = ?current_state,
+        "stop requested"
+    );
+}
+
+/// No-op without the `tracing` feature.
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn stop_requested(_: &'static str, _: ActorId, _: LifecycleState) {}
 
 /// Emit the "actor stopped" event after the stop hook has run. A clean drain is
 /// `DEBUG`; a handler-induced failure is `WARN`.

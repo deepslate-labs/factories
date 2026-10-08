@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use factories::actor::dispatch::DispatchedActorMessage;
-use factories::actor::event::{EventContext, EventDriver};
+use factories::actor::event::{EventContext, EventDriver, standard_mailbox_poll};
 use factories::actor::{Actor, ActorContext};
 use factories::runtime::lock::UnguardedLock;
 use factories::runtime::sequential_loop::SequentialRunLoop;
@@ -51,7 +51,9 @@ impl Ticker {
         if cx.shared_data().fired.load(Ordering::Acquire) < TICK_BUDGET {
             return Some(cx.message(Tick));
         }
-        mailbox.receive().await
+        // The standard mailbox arm: closes the mailbox once a stop was
+        // requested, so the source does not have to check for it itself.
+        standard_mailbox_poll(&cx, mailbox).await
     }
 
     /// Bumps both the actor's own tally and the shared counter the event source
@@ -60,6 +62,11 @@ impl Ticker {
     async fn tick(&mut self, #[context] actor: ActorContext<'_, Self>) {
         self.total += 1;
         actor.shared_data().fired.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[handler]
+    async fn finish(&mut self, #[context] actor: ActorContext<'_, Self>) {
+        actor.stop();
     }
 
     #[handler]
@@ -96,6 +103,26 @@ async fn event_source_fires_until_budget_then_defers() {
     // No further ticks once the budget drained.
     let again = handle.get_total().await.expect("ask");
     assert_eq!(again, TICK_BUDGET, "no ticks after the budget drained");
+}
+
+#[tokio::test]
+async fn event_source_actor_stops_through_the_standard_mailbox_arm() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Ticker { total: 0 })
+        .await
+        .expect("ticker init is infallible");
+
+    handle.finish().await.expect("ask");
+
+    // The handle stays alive; the source's mailbox arm closes the mailbox and
+    // the drained `None` ends the loop.
+    handle.state().wait_for_terminal().await;
+    assert!(
+        handle.get_total().await.is_err(),
+        "the mailbox is closed once the actor finished"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +195,7 @@ impl<M: ActorMailbox + Send> EventDriver<Beacon, M> for CountdownDriver {
                 self.remaining -= 1;
                 return Some(cx.message(Ping));
             }
-            mailbox.receive().await
+            standard_mailbox_poll(&cx, mailbox).await
         }
     }
 }

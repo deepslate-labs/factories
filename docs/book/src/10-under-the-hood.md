@@ -87,7 +87,8 @@ its traits all share one symmetric shape - **config in, assembled part out.**
   mailbox: `create(options) -> (channel, mailbox)`.
 - **`ActorMailbox`** - the *receive* side of a channel, touched only by run
   loops. `receive()` returns the next delivery (and is `+ Send`, so the loop can
-  migrate across threads).
+  migrate across threads); `close()` refuses further sends while the backlog
+  drains, which is how a `cx.stop()` request is honoured.
 - **`SpawnableRunLoop`** - a run loop you can build from a config plus the
   assembled parts and drive to completion: `run_with(config, init, shared,
   mailbox, self_ref)`.
@@ -326,7 +327,9 @@ async fn drive(ctx: MyDispatchContext, mut mailbox: impl ActorMailbox + Send) {
 }
 ```
 
-This loop is genuinely sequential and carries no work set. Because it doesn't
+This loop is genuinely sequential and carries no work set. It also polls the
+mailbox directly, so it would ignore `cx.stop()` - a real loop closes the
+mailbox once the shared state reports `should_stop()`. Because it doesn't
 implement `SpawnableRunLoop`, you can't hand it to the builder - but you don't
 need to. Assemble the handle and shared state by hand, spawn `drive(..)` as a
 task, attach it, and you have a running actor on a run loop the framework has

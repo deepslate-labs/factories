@@ -285,8 +285,8 @@ it can't be combined with message-derived field parameters.
 
 A `#[context]` parameter receives the [`ActorContext`](06-lifecycle.md) - a reduced
 handle to the actor's own runtime services from inside a handler. With it a handler can
-fail the actor (`cx.fail(error)`), get a weak self-reference, or set up a watch on
-another actor. `ActorContext` is in the prelude (it's `ActorContext<'_, Self>` - the
+fail the actor (`cx.fail(error)`), ask it to stop (`cx.stop()`), get a weak
+self-reference, or set up a watch on another actor. `ActorContext` is in the prelude (it's `ActorContext<'_, Self>` - the
 lifetime is the borrow of the actor's shared state, `Self` the actor type):
 
 ```rust

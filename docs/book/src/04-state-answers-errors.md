@@ -249,6 +249,12 @@ A note on `&mut self` and reclaiming state: `cx.fail` only *records* the error
 and signals the loop. The handler still finishes normally and returns to the run
 loop, which then performs the shutdown. You don't have to unwind by hand.
 
+## Stopping the actor
+
+To gracefully shut down an actor, call `cx.stop()`. The run loop will notice the
+call and perform the shutdown. Queued work is finished normally, but the actor
+is no longer running and can't be sent new messages.
+
 ## Choosing the path
 
 Three tools, one decision - *should this failure end the actor?*

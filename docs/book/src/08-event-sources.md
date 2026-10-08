@@ -20,7 +20,7 @@ You add an event source with one method on your `#[messages]` impl, marked
 
 ```rust
 use factories::actor::dispatch::DispatchedActorMessage;
-use factories::actor::event::EventContext;
+use factories::actor::event::{EventContext, standard_mailbox_poll};
 use factories::spawn::ActorMailbox;
 
 #[event_source]
@@ -29,13 +29,14 @@ async fn drive(
     mailbox: &mut (impl ActorMailbox + Send),
 ) -> Option<DispatchedActorMessage> {
     // decide what feeds the actor this turn
-    mailbox.receive().await
+    standard_mailbox_poll(&cx, mailbox).await
 }
 ```
 
-Three of those types live outside the prelude, so you import them explicitly:
-`DispatchedActorMessage` from `factories::actor::dispatch`, `EventContext` from
-`factories::actor::event`, and `ActorMailbox` from `factories::spawn`.
+Those imports live outside the prelude, so you name them explicitly:
+`DispatchedActorMessage` from `factories::actor::dispatch`, `EventContext` and
+`standard_mailbox_poll` from `factories::actor::event`, and `ActorMailbox` from
+`factories::spawn`.
 
 Notice what's *missing*: there is no `self`. An event source is **not** a handler.
 A handler is invoked *with the actor's state already locked for it* - the
@@ -69,12 +70,16 @@ Within that one method you have three moves, and you'll mix them freely:
    dispatch addressed to *this* actor - the same `SomeMsg` you'd send from
    outside, only it skips the channel. Return it and the matching `#[handler]`
    runs next.
-2. **Defer to the mailbox.** `mailbox.receive().await` waits for real traffic,
-   exactly like a plain reactive actor. Returning this is how an event source
-   "stands down" and behaves normally.
+2. **Defer to the mailbox.** `standard_mailbox_poll(&cx, mailbox).await` waits
+   for real traffic, exactly like a plain reactive actor. Returning this is how
+   an event source "stands down" and behaves normally. It is
+   `mailbox.receive().await` plus one check: if a handler asked the actor to
+   stop (`cx.stop()`, see [Lifecycle](06-lifecycle.md)), it closes the mailbox
+   first, so the backlog drains to `None` and the loop can end. You can also
+   poll the mailbox directly, but honoring the stop request is up to you then. 
 3. **Race your own futures against the mailbox.** Run a timer (or a socket read,
-   or any future) *and* `mailbox.receive()` together, and yield whichever wins.
-   This is the interesting case, and it's where the heartbeat earns its name.
+   or any future) *and* `standard_mailbox_poll(&cx, mailbox)` together, and
+   yield whichever wins.
 
 ## The running example: a heartbeat
 
@@ -94,7 +99,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use factories::actor::dispatch::DispatchedActorMessage;
-use factories::actor::event::EventContext;
+use factories::actor::event::{EventContext, standard_mailbox_poll};
 use factories::actor::ActorContext;
 use factories::prelude::*;
 use factories::spawn::ActorMailbox;
@@ -146,7 +151,7 @@ impl Heartbeat {
             return Some(cx.message(Tick));
         }
         // Budget spent: behave like any ordinary actor and await real traffic.
-        mailbox.receive().await
+        standard_mailbox_poll(&cx, mailbox).await
     }
 
     #[handler]
@@ -170,13 +175,15 @@ the lock held, bumps `self.beats`, and bumps the shared `fired` so the *next*
 turn of the source sees one more tick has landed. (Both halves reach the shared
 extension the same way: the source through `cx.shared_data()`, the handler through
 its `ActorContext`'s `extension()`.) Once `fired` reaches `TICK_BUDGET`, the
-source falls through to `mailbox.receive().await` and the actor is reactive again
-- answering `beats()` asks promptly, starving nothing.
+source falls through to `standard_mailbox_poll(&cx, mailbox).await` and the
+actor is reactive again - answering `beats()` asks promptly, starving nothing.
 
 That budget is the point worth internalizing: an event source that always returns
 a self-message and never polls the mailbox is a tight loop the actor can never
-escape. Giving the source a way to *stand down* - here, the budget check - keeps
-real traffic flowing. Cancel-safety matters for the same reason: if you race the
+escape - and one it can never *stop*, either, because a stop request is
+honoured inside `standard_mailbox_poll`, so the source has to get there. Giving
+the source a way to *stand down* - here, the budget check - keeps real traffic
+flowing. Cancel-safety matters for the same reason: if you race the
 timer against the mailbox and the mailbox wins, the dropped timer branch must
 leave no half-finished state behind. (The heartbeat sidesteps this by not racing
 - it `await`s the sleep, *then* checks the mailbox - but a true race needs care.)
@@ -189,8 +196,9 @@ autoref-detects it and generates the run loop that calls it each turn, wiring it
 in as the actor's `EventDriver`. There is an ordinary trait impl underneath -
 this is `factories` keeping its one promise from [the introduction](01-introduction.md)
 - but you don't write it. A plain actor with no `#[event_source]` simply gets the
-default driver, which is exactly `mailbox.receive()` and nothing more, so a
-reactive actor pays nothing for machinery it doesn't use.
+default driver, which is exactly `standard_mailbox_poll` and nothing more, so a
+reactive actor pays nothing for machinery it doesn't use - and can still stop
+itself, since that one call is where a stop request is honoured.
 
 ## The escape hatch: a stateful driver
 
@@ -201,7 +209,7 @@ that, `#[event_source]` deliberately steps aside: you hand-write an `EventDriver
 and name it.
 
 ```rust
-use factories::actor::event::{EventContext, EventDriver};
+use factories::actor::event::{EventContext, EventDriver, standard_mailbox_poll};
 
 #[derive(Actor)]
 #[actor(event_driver = CountdownDriver)]
@@ -239,7 +247,7 @@ impl<M: ActorMailbox + Send> EventDriver<Beacon, M> for CountdownDriver {
                 self.remaining -= 1;
                 return Some(cx.message(Ping));
             }
-            mailbox.receive().await
+            standard_mailbox_poll(&cx, mailbox).await
         }
     }
 }
@@ -251,6 +259,13 @@ state, persisted by the run loop from one turn to the next. The `From<&Beacon>`
 impl seeds it after the actor initializes, which is the one thing the stateless
 source genuinely can't do: its only state, the shared extension, predates the
 actor.
+
+Stopping is the driver's call as well. `cx.should_stop()` tells a driver that
+a handler asked the actor to finish; `standard_mailbox_poll` reacts by closing
+the mailbox, and a driver that wants to wind down its own source first (flush a
+socket, say) can check the flag itself and return `None` when it's ready. What a
+driver must not do is keep yielding from its own sources forever - then the
+actor never stops.
 
 So the rule of thumb is short. Reach for `#[event_source]` first - it's stateless,
 detected automatically, and coordinates through a shared extension when it needs

@@ -90,7 +90,8 @@ where
     /// Spawn and wait until init has resolved.
     ///
     /// Returns the actor's init error if initialization failed. An actor that
-    /// ran and exited normally before this observed `Running` yields `Ok`.
+    /// ran and exited normally before this observed `Running` yields `Ok`, as
+    /// does one that requested its stop from `on_start` (observed `Draining`).
     pub async fn spawn_ready<I, M>(
         self,
         spawner: &impl ActorTaskSpawner,

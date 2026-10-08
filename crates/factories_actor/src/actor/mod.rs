@@ -487,6 +487,28 @@ impl<'a, A: Actor + ?Sized> ActorContext<'a, A> {
         self.state.record_failure(error);
     }
 
+    /// Ask the actor to finish: a clean, graceful stop.
+    ///
+    /// Records the request as the [`Draining`](state::LifecycleState::Draining)
+    /// lifecycle state and returns
+    /// The event driver observes the request through
+    /// [`EventContext::should_stop`](event::EventContext::should_stop) on
+    /// its next turn, closes the mailbox (late senders get
+    /// [`ActorDead`](channel::ActorChannelSendError::ActorDead)) and keeps
+    /// serving the backlog that was already queued. Once that drains, the loop
+    /// exits and [`on_stop`](Actor::on_stop) runs with
+    /// [`StopReason::Finished`](lifecycle::StopReason::Finished); in-flight work
+    /// on a concurrent loop completes first, as on any drain.
+    ///
+    /// Idempotent, and [`fail`](Self::fail) still wins whichever comes first:
+    /// the loop checks for a recorded failure before pulling. Requested from
+    /// `on_start`, the actor drains before serving a single message, and
+    /// `spawn_ready` still reports it as started.
+    pub fn stop(&self) {
+        crate::obs::stop_requested(A::RTTI.name(), self.state.id(), self.state.lifecycle());
+        self.state.transition_draining();
+    }
+
     /// The current lifecycle state of the actor.
     pub fn lifecycle(&self) -> state::LifecycleState {
         self.state.lifecycle()

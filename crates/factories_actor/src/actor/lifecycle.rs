@@ -89,8 +89,9 @@ impl Debug for CapturedPanic {
 /// Why an actor's run loop is stopping, handed to
 /// [`on_stop`](crate::actor::Actor::on_stop).
 pub enum StopReason<'a, A: Actor + ?Sized> {
-    /// The event source signalled completion (e.g. the mailbox closed) and the
-    /// loop drained without failing.
+    /// The event source signalled completion - the mailbox closed because the
+    /// last handle dropped or the actor [asked to stop](crate::actor::ActorContext::stop)
+    /// - and the loop drained without failing.
     Finished,
 
     /// A handler - or the start hook - failed the actor. Carries the error that
@@ -108,7 +109,8 @@ pub enum StopReason<'a, A: Actor + ?Sized> {
 /// The recorded outcome of an actor, observable through
 /// [`SharedActorState::termination_reason`](crate::actor::state::SharedActorState::termination_reason).
 pub enum TerminationReason<A: Actor + ?Sized> {
-    /// The run loop drained and exited cleanly.
+    /// The run loop drained and exited cleanly: the last handle dropped, or the
+    /// actor [asked to stop](crate::actor::ActorContext::stop).
     Finished,
 
     /// A handler - or the start hook / init - failed the actor. Carries the
@@ -167,7 +169,8 @@ where
 /// signal pushed to watchers.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum TerminationKind {
-    /// The run loop drained and exited cleanly.
+    /// The run loop drained and exited cleanly: the last handle dropped, or the
+    /// actor [asked to stop](crate::actor::ActorContext::stop).
     Finished,
 
     /// A handler, the start hook, or init failed the actor.

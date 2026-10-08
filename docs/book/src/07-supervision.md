@@ -110,7 +110,8 @@ Three pieces are worth naming:
 variants:
 
 - `Finished` - the run loop drained and exited cleanly. This is what you get
-  when the last handle to an actor drops and it simply runs out of work.
+  when the last handle to an actor drops and it simply runs out of work, or
+  when the actor asked to stop itself with `cx.stop()`.
 - `Failed` - a handler, the start hook, or initialization failed the actor
   (we'll cover failing an actor in [Lifecycle](06-lifecycle.md)).
 - `Aborted` - the actor reached its dead state with no recorded outcome: a

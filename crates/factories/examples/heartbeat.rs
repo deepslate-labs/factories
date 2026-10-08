@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use factories::actor::ActorContext;
 use factories::actor::dispatch::DispatchedActorMessage;
-use factories::actor::event::EventContext;
+use factories::actor::event::{EventContext, standard_mailbox_poll};
 use factories::actor::lifecycle::StopReason;
 use factories::prelude::*;
 use factories::spawn::ActorMailbox;
@@ -53,8 +53,9 @@ impl Heartbeat {
             tokio::time::sleep(Duration::from_millis(20)).await;
             return Some(cx.message(Tick));
         }
-        // Budget spent: behave like any ordinary actor and await real traffic.
-        mailbox.receive().await
+        // Budget spent: behave like any ordinary actor and await real traffic
+        // (through the standard mailbox arm, so a `cx.stop()` is honoured).
+        standard_mailbox_poll(&cx, mailbox).await
     }
 
     /// Handles a self-`Tick`: bumps the actor's tally and the shared counter the

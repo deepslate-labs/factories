@@ -39,6 +39,12 @@ pub trait EventDriver<A: Actor + ?Sized, M> {
     /// Cancel-safety is the driver's responsibility: any racing it does must
     /// keep in-flight progress in `self`, so a branch dropped when another wins
     /// can resume next turn.
+    ///
+    /// Once a handler or hook asked the actor to finish, [`EventContext::should_stop`] returns
+    /// true. The driver should [`close`](ActorMailbox::close) the mailbox, keep serving what it
+    /// still hands out, and return `None` when it is drained -
+    /// [`standard_mailbox_poll`] does exactly that for the mailbox arm. A driver
+    /// that keeps producing from its own sources keeps the actor alive.
     // The `Send` bound here mainly exists because RTN is not stable yet.
     fn next<'a>(
         &'a mut self,
@@ -47,7 +53,8 @@ pub trait EventDriver<A: Actor + ?Sized, M> {
     ) -> impl Future<Output = Option<DispatchedActorMessage>> + Send + 'a;
 }
 
-/// The default driver: pull straight from the mailbox.
+/// The default driver: pull straight from the mailbox, honouring stop requests
+/// (it is [`standard_mailbox_poll`] as a driver).
 #[derive(Debug, Default, Copy, Clone)]
 pub struct DefaultMailboxDriver;
 
@@ -65,11 +72,37 @@ where
 {
     fn next<'a>(
         &'a mut self,
-        _cx: EventContext<'a, A>,
+        cx: EventContext<'a, A>,
         mailbox: &'a mut M,
     ) -> impl Future<Output = Option<DispatchedActorMessage>> + Send + 'a {
-        mailbox.receive()
+        standard_mailbox_poll(&cx, mailbox)
     }
+}
+
+/// The standard mailbox arm of an event driver: close the mailbox if a stop was
+/// requested, then receive.
+///
+/// Drop this in wherever a driver or `#[event_source]` would call
+/// [`ActorMailbox::receive`] - typically one arm of a `select!` racing the
+/// actor's own sources. The stop check runs synchronously when the future is
+/// built, so a driver that rebuilds its arms each turn (as `select!` does)
+/// picks up the request on its next turn; after the close, the mailbox keeps
+/// handing out its backlog and finally resolves to `None`, which ends the loop.
+/// Closing is idempotent, so calling this on every turn is fine.
+///
+/// The returned future borrows only the mailbox, not `cx`.
+pub fn standard_mailbox_poll<'a, A, M>(
+    cx: &EventContext<'_, A>,
+    mailbox: &'a mut M,
+) -> impl Future<Output = Option<DispatchedActorMessage>> + Send + use<'a, A, M>
+where
+    A: Actor + ?Sized,
+    M: ActorMailbox + Send + ?Sized,
+{
+    if cx.should_stop() {
+        mailbox.close();
+    }
+    mailbox.receive()
 }
 
 /// Capabilities handed to an [`EventDriver`] for one turn.
@@ -129,6 +162,18 @@ impl<'a, A: Actor + ?Sized> EventContext<'a, A> {
     /// The actor's shared state (lifecycle, failure).
     pub fn state(&self) -> &'a SharedActorState<A> {
         self.shared
+    }
+
+    /// Whether a handler or hook asked the actor to finish
+    /// ([`ActorContext::stop`](crate::actor::ActorContext::stop)).
+    ///
+    /// A driver that sees `true` should [`close`](ActorMailbox::close) the
+    /// mailbox and let the drained `None` end the loop.
+    ///
+    /// See [`standard_mailbox_poll`] for a framework function that handles
+    /// this request when implementing a custom [`EventDriver`].
+    pub fn should_stop(&self) -> bool {
+        self.shared.should_stop()
     }
 
     /// The actor's lock-free shared data

@@ -74,13 +74,21 @@ pub enum LifecycleState {
     /// Initialization succeeded and the run loop is processing messages.
     Running = 1,
 
+    /// A stop was requested ([`ActorContext::stop`](crate::actor::ActorContext::stop)):
+    /// the actor is finishing cleanly. The event driver closes the mailbox and
+    /// the loop still serves what was queued before the request. Reached from
+    /// [`Running`](Self::Running), or from [`Starting`](Self::Starting) when the
+    /// request comes from the start hook.
+    Draining = 2,
+
     /// The run loop has stopped pulling new work and is running the actor's
-    /// stop hook before the actor is dropped. Reached from [`Running`](Self::Running).
-    Stopping = 2,
+    /// stop hook before the actor is dropped. Reached from
+    /// [`Running`](Self::Running) or [`Draining`](Self::Draining).
+    Stopping = 3,
 
     /// The actor is dead: init failed, the run loop exited or the task was
     /// aborted. This state is terminal.
-    Dead = 3,
+    Dead = 4,
 }
 
 impl LifecycleState {
@@ -88,8 +96,9 @@ impl LifecycleState {
         match raw {
             0 => Self::Starting,
             1 => Self::Running,
-            2 => Self::Stopping,
-            3 => Self::Dead,
+            2 => Self::Draining,
+            3 => Self::Stopping,
+            4 => Self::Dead,
             _ => unreachable!("invalid lifecycle state"),
         }
     }
@@ -131,17 +140,45 @@ impl LifecycleCell {
         self.waiters.wake_all();
     }
 
-    /// Transition from `Running` to `Stopping`.
+    /// Transition from `Running` to `Draining`: a stop was requested.
     ///
-    /// No-op if the state is not `Running` (the actor may already be dead, or
-    /// never left `Starting` because init/start failed).
+    /// Also taken from `Starting`, for a request made by the start hook: the
+    /// loop's later `Running` transition then finds the state already past it
+    /// and leaves it alone.
+    ///
+    /// No-op from `Stopping` or `Dead`, idempotent.
+    pub fn transition_draining(&self) {
+        for from in [LifecycleState::Running, LifecycleState::Starting] {
+            let taken = self.state.compare_exchange(
+                from as u8,
+                LifecycleState::Draining as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if taken.is_ok() {
+                // Leaving `Starting` is what readiness waiters await.
+                self.waiters.wake_all();
+                return;
+            }
+        }
+    }
+
+    /// Transition from `Running` or `Draining` to `Stopping`.
+    ///
+    /// No-op otherwise (the actor may already be dead, or never left
+    /// `Starting` because init/start failed).
     pub fn transition_stopping(&self) {
-        let _ = self.state.compare_exchange(
-            LifecycleState::Running as u8,
-            LifecycleState::Stopping as u8,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        for from in [LifecycleState::Running, LifecycleState::Draining] {
+            let taken = self.state.compare_exchange(
+                from as u8,
+                LifecycleState::Stopping as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if taken.is_ok() {
+                return;
+            }
+        }
     }
 
     /// Transition to `Dead`. Terminal and idempotent.
@@ -454,7 +491,25 @@ impl<A: Actor + ?Sized> SharedActorState<A> {
         self.inner.lifecycle.transition_running();
     }
 
-    /// Transition from `Running` to `Stopping`. No-op outside `Running`.
+    /// Request a clean stop: transition to `Draining` (from `Running`, or from
+    /// `Starting` for a request made by the start hook). No-op once stopping or
+    /// dead; idempotent.
+    pub fn transition_draining(&self) {
+        self.inner.lifecycle.transition_draining();
+    }
+
+    /// Whether a clean stop was requested: the lifecycle is at or past
+    /// `Draining`. Event drivers read this through
+    /// [`EventContext::should_stop`](crate::actor::event::EventContext::should_stop)
+    /// and close the mailbox in response.
+    pub fn should_stop(&self) -> bool {
+        !matches!(
+            self.lifecycle(),
+            LifecycleState::Starting | LifecycleState::Running
+        )
+    }
+
+    /// Transition from `Running` or `Draining` to `Stopping`. No-op otherwise.
     pub fn transition_stopping(&self) {
         self.inner.lifecycle.transition_stopping();
     }
@@ -581,6 +636,44 @@ mod tests {
         cell.transition_dead();
         cell.transition_running();
         assert_eq!(cell.current(), LifecycleState::Dead, "dead is terminal");
+    }
+
+    #[test]
+    fn transition_draining_from_running() {
+        let cell = LifecycleCell::new();
+        cell.transition_running();
+        cell.transition_draining();
+        assert_eq!(cell.current(), LifecycleState::Draining);
+    }
+
+    #[test]
+    fn transition_draining_from_starting_preempts_running() {
+        // A stop requested from the start hook lands before `Running`; the
+        // loop's later `Running` transition must not undo it.
+        let cell = LifecycleCell::new();
+        cell.transition_draining();
+        cell.transition_running();
+        assert_eq!(cell.current(), LifecycleState::Draining);
+    }
+
+    #[test]
+    fn transition_stopping_from_draining() {
+        let cell = LifecycleCell::new();
+        cell.transition_running();
+        cell.transition_draining();
+        cell.transition_stopping();
+        assert_eq!(cell.current(), LifecycleState::Stopping);
+    }
+
+    #[test]
+    fn draining_is_not_terminal() {
+        let cell = LifecycleCell::new();
+        cell.transition_running();
+        cell.transition_draining();
+        let mut fut = cell.wait_for_terminal();
+        assert!(poll_once(&mut fut).is_pending());
+        cell.transition_dead();
+        assert_eq!(poll_once(&mut fut), Poll::Ready(()));
     }
 
     #[test]

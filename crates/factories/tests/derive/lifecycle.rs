@@ -54,6 +54,14 @@ impl Hooked {
     async fn ping(&self, #[context] cx: ActorContext<'_, Self>) {
         cx.shared_data().record("ping");
     }
+
+    /// Asks the actor to finish: the derive's generated driver honours the
+    /// request without any event source being written.
+    #[handler]
+    async fn finish(&mut self, #[context] cx: ActorContext<'_, Self>) {
+        cx.stop();
+        cx.shared_data().record("finish");
+    }
 }
 
 #[tokio::test]
@@ -81,6 +89,33 @@ async fn derived_lifecycle_hooks_run_in_order() {
         log.snapshot(),
         ["start", "ping", "stop:finished"],
         "on_stop runs on a clean drain with the Finished reason"
+    );
+}
+
+#[tokio::test]
+async fn derived_actor_stops_itself() {
+    let spawner = TokioTaskSpawner::current();
+
+    let handle = ActorLauncher::default()
+        .spawn_ready(&spawner, Hooked)
+        .await
+        .expect("hooked init is infallible");
+    let log = handle.state().shared_data().clone();
+
+    handle.ping().await.expect("ask");
+    handle.finish().await.expect("ask");
+
+    // The handle stays alive: the request alone ends the actor.
+    handle.state().wait_for_terminal().await;
+    assert_eq!(
+        log.snapshot(),
+        ["start", "ping", "finish", "stop:finished"],
+        "a requested stop drains and runs on_stop with Finished"
+    );
+
+    assert!(
+        handle.ping().await.is_err(),
+        "the mailbox is closed once the actor finished"
     );
 }
 

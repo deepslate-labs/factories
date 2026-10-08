@@ -34,4 +34,11 @@ pub trait ActorMailbox {
     ///
     /// Resolves to `None` once the channel is closed and drained.
     fn receive(&mut self) -> impl Future<Output = Option<DispatchedActorMessage>> + Send + '_;
+
+    /// Close the mailbox: refuse every send from now on, but keep handing out
+    /// what was already queued until [`receive`](Self::receive) resolves to
+    /// `None`.
+    ///
+    /// Idempotent.
+    fn close(&mut self);
 }
