@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::pin::Pin;
 
@@ -41,33 +40,46 @@ impl ActorTaskHandle {
         }
     }
 
-    pub fn from_vtable<T: ActorTaskHandleVTable + Send + Sync>(value: T) -> Self {
-        if size_of::<T>() <= size_of::<*mut core::ffi::c_void>()
-            && align_of::<T>() <= align_of::<*mut core::ffi::c_void>()
-        {
-            // Can store this inline
-            let handle = unsafe {
-                let mut handle = MaybeUninit::<*mut core::ffi::c_void>::zeroed();
-                handle.as_mut_ptr().cast::<T>().write(value);
+    /// Create a task handle from an [`ActorTaskHandleVTable`] impl.
+    ///
+    /// `value` is moved to the heap, so `T` may be of any size. It must be
+    /// `'static` because the handle carries no lifetime, so a backend that
+    /// borrows is rejected:
+    ///
+    /// ```compile_fail,E0597
+    /// use core::sync::atomic::{AtomicBool, Ordering};
+    /// use factories_actor::actor::task::{
+    ///     ActorTaskHandle, ActorTaskHandleVTable, WaitForTerminationFut,
+    /// };
+    ///
+    /// struct Borrowed<'a>(&'a AtomicBool);
+    ///
+    /// impl ActorTaskHandleVTable for Borrowed<'_> {
+    ///     fn abort(&self) {
+    ///         self.0.store(true, Ordering::Relaxed);
+    ///     }
+    ///
+    ///     fn wait_for_termination(&self) -> WaitForTerminationFut {
+    ///         Box::pin(async {})
+    ///     }
+    /// }
+    ///
+    /// let handle = {
+    ///     let flag = AtomicBool::new(false);
+    ///     ActorTaskHandle::from_vtable(Borrowed(&flag))
+    /// };
+    /// handle.abort();
+    /// ```
+    pub fn from_vtable<T: ActorTaskHandleVTable + Send + Sync + 'static>(value: T) -> Self {
+        // Always boxed, even if `T` fits in a pointer, storing it inline would
+        // turn its padding bytes into uninitialized pointer bits.
+        let handle = Box::into_raw(Box::new(value)).cast();
 
-                handle.assume_init()
-            };
-
-            Self {
-                handle,
-                abort: Self::vtable_abort_trampoline::<T>,
-                wait_for_termination: Self::vtable_wait_for_termination_trampoline::<T>,
-                drop: Self::vtable_drop_trampoline::<T>,
-            }
-        } else {
-            let handle = Box::into_raw(Box::new(value)).cast();
-
-            Self {
-                handle,
-                abort: Self::vtable_abort_trampoline::<Box<T>>,
-                wait_for_termination: Self::vtable_wait_for_termination_trampoline::<Box<T>>,
-                drop: Self::vtable_drop_trampoline::<Box<T>>,
-            }
+        Self {
+            handle,
+            abort: Self::vtable_abort_trampoline::<Box<T>>,
+            wait_for_termination: Self::vtable_wait_for_termination_trampoline::<Box<T>>,
+            drop: Self::vtable_drop_trampoline::<Box<T>>,
         }
     }
 
@@ -123,7 +135,7 @@ impl Drop for ActorTaskHandle {
 
 /// Vtable implementation for task handles.
 ///
-/// Task handles must be sized equal or smaller to a pointer.
+/// [`ActorTaskHandle::from_vtable`] stores the implementation on the heap.
 pub trait ActorTaskHandleVTable {
     /// Attempt to abort the task.
     ///
@@ -144,5 +156,71 @@ impl<T: ActorTaskHandleVTable> ActorTaskHandleVTable for Box<T> {
 
     fn wait_for_termination(&self) -> WaitForTerminationFut {
         self.deref().wait_for_termination()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    /// Fits in a pointer and has a padding byte at offset 1.
+    #[repr(C)]
+    struct Padded {
+        tag: u8,
+        id: u16,
+    }
+
+    static PADDED_ABORTED: AtomicU32 = AtomicU32::new(0);
+
+    impl ActorTaskHandleVTable for Padded {
+        fn abort(&self) {
+            PADDED_ABORTED.store(
+                (u32::from(self.tag) << 16) | u32::from(self.id),
+                Ordering::Relaxed,
+            );
+        }
+
+        fn wait_for_termination(&self) -> WaitForTerminationFut {
+            Box::pin(async {})
+        }
+    }
+
+    // Under miri this used to report UB in `from_vtable`: the padding byte was
+    // read as part of a pointer.
+    #[test]
+    fn pointer_sized_backend_with_padding() {
+        let handle = ActorTaskHandle::from_vtable(Padded {
+            tag: 0xab,
+            id: 0x1234,
+        });
+        handle.abort();
+        assert_eq!(PADDED_ABORTED.load(Ordering::Relaxed), 0x00ab_1234);
+    }
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    struct CountsDrops;
+
+    impl Drop for CountsDrops {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl ActorTaskHandleVTable for CountsDrops {
+        fn abort(&self) {}
+
+        fn wait_for_termination(&self) -> WaitForTerminationFut {
+            Box::pin(async {})
+        }
+    }
+
+    #[test]
+    fn backend_is_dropped_once_with_the_handle() {
+        let handle = ActorTaskHandle::from_vtable(CountsDrops);
+        assert_eq!(DROPS.load(Ordering::Relaxed), 0);
+        drop(handle);
+        assert_eq!(DROPS.load(Ordering::Relaxed), 1);
     }
 }
