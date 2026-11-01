@@ -10,7 +10,7 @@
 use crate::actor::event::{EventContext, EventDriver};
 use crate::actor::handle::WeakActorHandle;
 use crate::actor::lifecycle::{CapturedPanic, StopReason, TerminationReason};
-use crate::actor::state::SharedActorState;
+use crate::actor::state::{DeadOnDropGuard, SharedActorState};
 use crate::actor::work::{FutureWorkConverter, into_work};
 use crate::actor::{
     Actor, ActorContext, ActorInit, ActorRunLoop, ActorRunLoopDispatchContext, LockStrategy,
@@ -19,6 +19,7 @@ use alloc::boxed::Box;
 use core::fmt::{Debug, Formatter};
 use core::future::Future;
 use core::pin::Pin;
+use core::task::{Context, Poll};
 
 /// The unit of work the standard run loops drive: a `Send` future.
 /// [`next_dispatch`](StandardDispatchContext::next_dispatch) gets the converter's
@@ -263,7 +264,62 @@ pub trait StandardLoop<A: Actor + ?Sized>: ActorRunLoop<A> + Sized {
 /// off to the loop's [`StandardLoop::run`]. A [`StandardLoop`]'s
 /// [`SpawnableRunLoop`](crate::spawn::SpawnableRunLoop) `run_with` is a one-line
 /// delegation to this.
-pub async fn standard_run_with<A, L, I, M>(
+///
+/// The drop-guard is created here, before the returned future is first polled,
+/// so a task aborted before its first poll still marks the actor `Dead`.
+pub fn standard_run_with<A, L, I, M>(
+    init: I,
+    shared: SharedActorState<A>,
+    mailbox: M,
+    self_ref: WeakActorHandle<A>,
+) -> impl Future<Output = ()> + Send
+where
+    A: Actor<RunLoop = L> + Into<A::LockStrategy> + Send,
+    L: StandardLoop<A>,
+    I: ActorInit<A> + Send + 'static,
+    I::Fut: Send,
+    A::EventDriver: EventDriver<A, M> + Send,
+    A::LockStrategy: Send + Sync,
+    A::Error: Send + Sync + 'static,
+    WeakActorHandle<A>: Send + Sync,
+    M: Send + 'static,
+    <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
+{
+    // Loop exit, handler panic and task abort all transition to `Dead`.
+    let guard = shared.dead_on_drop();
+    GuardedRun {
+        run: standard_run_body::<A, L, I, M>(init, shared, mailbox, self_ref),
+        guard: Some(guard),
+    }
+}
+
+/// Owns the [`DeadOnDropGuard`] next to the run future, so the guard exists even
+/// if the future is dropped without ever being polled.
+#[pin_project::pin_project]
+struct GuardedRun<F, A: Actor + ?Sized> {
+    // Declared first so it drops first: the mailbox inside `run` is closed
+    // before the guard publishes `Dead`.
+    #[pin]
+    run: F,
+    guard: Option<DeadOnDropGuard<A>>,
+}
+
+impl<F: Future<Output = ()>, A: Actor + ?Sized> Future for GuardedRun<F, A> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.project();
+        let poll = this.run.poll(cx);
+        if poll.is_ready() {
+            // The body has returned and dropped its state: mark the actor dead
+            // now, not whenever the spawner gets around to dropping this future.
+            this.guard.take();
+        }
+        poll
+    }
+}
+
+async fn standard_run_body<A, L, I, M>(
     init: I,
     shared: SharedActorState<A>,
     mailbox: M,
@@ -280,9 +336,6 @@ pub async fn standard_run_with<A, L, I, M>(
     M: Send + 'static,
     <A::RunLoop as ActorRunLoop<A>>::WorkConverter: FutureWorkConverter,
 {
-    // Loop exit, handler panic and task abort all transition to `Dead`.
-    let _guard = shared.dead_on_drop();
-
     // The actor is held across the start-hook await (its work borrows it), so
     // the task future needs `A: Send` - already implied by `A::LockStrategy:
     // Send` for the real locks, made explicit above. After the hook it moves
